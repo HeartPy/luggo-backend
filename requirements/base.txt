@@ -1,0 +1,9 @@
+# 共通の依存関係
+Django==5.0.*
+djangorestframework==3.14.*
+django-cors-headers==4.3.*
+python-decouple==3.8
+dj-database-url==2.1.*
+psycopg2-binary==2.9.*
+gunicorn==21.2.*
+Pillow==10.1.*

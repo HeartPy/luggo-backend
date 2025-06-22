@@ -1,0 +1,57 @@
+# マルチステージビルド: ビルドステージ
+FROM python:3.11-slim AS builder
+
+WORKDIR /code
+
+# システムの依存関係をインストール
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        postgresql-client \
+        build-essential \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pythonの依存関係をインストール（本番環境用）
+COPY requirements/ /code/requirements/
+RUN pip install --no-cache-dir -r requirements/production.txt
+
+# 本番ステージ
+FROM python:3.11-slim AS production
+
+WORKDIR /code
+
+# 必要なシステムパッケージのみインストール
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        postgresql-client \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 非rootユーザーを作成
+RUN groupadd -r django && useradd -r -g django django
+
+# ビルドステージからPythonパッケージをコピー
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# アプリケーションコードをコピー
+COPY . /code/
+
+ENV DJANGO_SETTINGS_MODULE=project.prod_settings
+
+# 静的ファイルとメディアファイル用のディレクトリを作成
+RUN mkdir -p /code/staticfiles /code/media \
+    && chown -R django:django /code
+
+# ユーザーを切り替え
+USER django
+
+# 静的ファイルを収集
+RUN python manage.py collectstatic --noinput
+
+# ヘルスチェック
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/health/', timeout=2)"
+
+# Gunicornでアプリケーションを起動
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "3", "project.wsgi:application"]
