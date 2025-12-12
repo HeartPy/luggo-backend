@@ -1,0 +1,13 @@
+from django.urls import path, URLPattern
+from . import views
+
+app_name = 'bookings'
+
+urlpatterns: list[URLPattern] = [
+    path('luggage-items', views.luggage_items, name='luggage-items'),
+    path('location-suggestions', views.location_suggestions, name='location-suggestions'),
+    path('create-payment-intent', views.create_payment_intent, name='create-payment-intent'),
+    path('', views.LuggageBookingCreateView.as_view(), name='booking-create'),
+    path('<uuid:pk>', views.LuggageBookingDetailView.as_view(), name='booking-detail'),
+    path('<uuid:booking_id>/cancel', views.cancel_booking, name='cancel-booking'),
+]
