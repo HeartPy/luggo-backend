@@ -4,6 +4,9 @@ env_file = BASE_DIR / '.env.prod'
 
 DEBUG = False
 
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -24,6 +27,16 @@ LOGGING = {
         'django': {
             'handlers': ['console'],
             'level': 'WARNING',
+        },
+        'business_owners': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'bookings': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
         },
     },
 }
