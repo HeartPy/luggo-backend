@@ -115,10 +115,10 @@ def format_phone_number_for_stripe(phone: str) -> str:
     if phone.startswith('+'):
         return phone
 
-    # 最初の0を取り除く（例: 080 → 80）
-    if phone_digits.startswith('0'):
-        phone_digits = phone_digits[1:]
-    # +81を追加
+        # 最初の0を取り除く（例: 080 → 80）
+        if phone_digits.startswith('0'):
+            phone_digits = phone_digits[1:]
+        # +81を追加
     return f'+81{phone_digits}'
 
 
