@@ -15,5 +15,8 @@ urlpatterns: list[URLPattern] = [
     path('public/stripe/custom/upload-document', views.public_custom_upload_verification_document, name='bo_public_custom_upload_document'),
 
     # 新規登録
-    path('register', views.register_business_owner, name='register_business_owner'),
+    path('account/register/check-email', views.check_email_availability, name='check_email_availability'),
+    path('account/register/request', views.request_registration_email, name='request_registration_email'),
+    path('account/register/verify', views.verify_registration_token_api, name='verify_registration_token'),
+    path('account/register', views.register_business_account, name='register_business_account'),
 ]

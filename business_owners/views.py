@@ -6,6 +6,10 @@ from rest_framework import status
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import validate_email
+from django.db import IntegrityError
+from django.utils import timezone
 from typing import Any, Dict, Optional, Literal, cast, Tuple
 import stripe
 import time
@@ -14,8 +18,14 @@ import io
 import logging
 from project.utils import mask_sensitive_id
 
-from .models import BusinessProfile
-from .serializers import CustomAccountUpdateSerializer, BusinessOwnerRegistrationSerializer
+from .models import BusinessProfile, RegistrationToken
+from .serializers import (
+    CustomAccountUpdateSerializer,
+    BusinessAccountRegistrationSerializer,
+    RegistrationRequestSerializer,
+    RegistrationTokenVerifySerializer,
+)
+from .utils import generate_registration_token, send_registration_email, verify_registration_token
 
 
 User = get_user_model()
@@ -524,316 +534,92 @@ def public_custom_create_or_get_account(request: Request) -> Response:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(['POST'])
+@api_view(['GET'])
 @permission_classes([AllowAny])
-def public_custom_update_account(request: Request) -> Response:
-    """
-    ログイン前のユーザーがセッションに保存されたStripeアカウントの情報を更新するための公開APIエンドポイント
-    """
+def check_email_availability(request: Request) -> Response:
+    """メールアドレスの重複チェックAPI"""
     try:
-        session_key = ANON_STRIPE_ACCOUNT_SESSION_KEY
-        account_id = request.session.get(session_key)
-        if not account_id:
-            return Response({'error': 'セッションが失われました。最初から登録をやり直してください。', 'restart': True}, status=status.HTTP_400_BAD_REQUEST)
+        email = request.query_params.get('email', '').strip().lower()
 
-        # フロントエンドから送信されたデータをバックエンドが期待する形式に変換
-        request_data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
-        transformed_data: Dict[str, Any] = {}
-
-        # product_company と product_details を business_profile と company に変換
-        product_company = request_data.get('product_company') or {}
-        product_details = request_data.get('product_details') or {}
-
-        if product_company or product_details:
-            # business_profile の構築
-            business_profile: Dict[str, Any] = {}
-            if product_company.get('product_name'):
-                business_profile['name'] = product_company['product_name']
-            if product_company.get('support_email'):
-                business_profile['support_email'] = product_company['support_email']
-            if product_details.get('product_url'):
-                business_profile['url'] = product_details['product_url']
-            if product_details.get('product_description'):
-                business_profile['product_description'] = product_details['product_description']
-            if product_details.get('product_mcc'):
-                business_profile['mcc'] = product_details['product_mcc']
-
-            if business_profile:
-                transformed_data['business_profile'] = business_profile
-
-            # company の構築
-            if product_company.get('company_name') or product_company.get('company_address'):
-                company: Dict[str, Any] = {}
-                if product_company.get('company_name'):
-                    company['name'] = product_company['company_name']
-                if product_company.get('company_address'):
-                    company['address'] = product_company['company_address']
-                if company:
-                    transformed_data['company'] = company
-
-        # rep_info を individual に変換
-        rep_info = request_data.get('rep_info') or {}
-        if rep_info:
-            individual: Dict[str, Any] = {}
-            if rep_info.get('first_name_kanji'):
-                individual['first_name_kanji'] = rep_info['first_name_kanji']
-            if rep_info.get('last_name_kanji'):
-                individual['last_name_kanji'] = rep_info['last_name_kanji']
-            if rep_info.get('first_name_kana'):
-                individual['first_name_kana'] = rep_info['first_name_kana']
-            if rep_info.get('last_name_kana'):
-                individual['last_name_kana'] = rep_info['last_name_kana']
-            if rep_info.get('rep_email'):
-                individual['email'] = rep_info['rep_email']
-            if rep_info.get('rep_phone'):
-                individual['phone'] = rep_info['rep_phone']
-            if rep_info.get('rep_dob'):
-                individual['dob'] = rep_info['rep_dob']
-            # address_kanji と address_kana を直接設定
-            if rep_info.get('address_kanji'):
-                individual['address_kanji'] = rep_info['address_kanji']
-            if rep_info.get('address_kana'):
-                individual['address_kana'] = rep_info['address_kana']
-
-            if individual:
-                transformed_data['individual'] = individual
-
-        # bank_info を external_account に変換
-        bank_info = request_data.get('bank_info') or {}
-        if bank_info:
-            external_account: Dict[str, Any] = {}
-            if bank_info.get('bank_code'):
-                external_account['bank_code'] = bank_info['bank_code']
-            if bank_info.get('branch_code'):
-                external_account['branch_code'] = bank_info['branch_code']
-            if bank_info.get('account_type'):
-                external_account['account_type'] = bank_info['account_type']
-            if bank_info.get('account_number'):
-                external_account['account_number'] = bank_info['account_number']
-            if bank_info.get('account_holder_name'):
-                external_account['account_holder_name'] = bank_info['account_holder_name']
-
-            if external_account:
-                transformed_data['external_account'] = external_account
-
-        # verif_docs を verification に変換
-        verif_docs = request_data.get('verif_docs') or {}
-        if verif_docs:
-            verification: Dict[str, Any] = {}
-            if verif_docs.get('document_front'):
-                verification['document_front'] = verif_docs['document_front']
-            if verif_docs.get('document_back'):
-                verification['document_back'] = verif_docs['document_back']
-
-            if verification:
-                transformed_data['verification'] = verification
-
-        serializer = CustomAccountUpdateSerializer(data=transformed_data)
-        serializer.is_valid(raise_exception=True)
-        payload = serializer.validated_data
-
-        update_params: Dict[str, Any] = {}
-
-        # Business Profile
-        business_profile = payload.get('business_profile') or {}
-        if business_profile:
-            # 空文字列のフィールドを除外（Stripeは空文字列を許可しない）
-            # URLフィールドは特に注意（空文字列は無効なURLとして扱われる）
-            cleaned_business_profile = {}
-            for key, value in business_profile.items():
-                # None、空文字列、空白のみの文字列を除外
-                if value is None:
-                    continue
-                if value == '':
-                    continue
-                if isinstance(value, str):
-                    value = value.strip()
-                    if value == '':
-                        continue
-                cleaned_business_profile[key] = value
-            if cleaned_business_profile:
-                update_params['business_profile'] = cleaned_business_profile
-
-        # Company
-        company = payload.get('company') or {}
-        if company:
-            cleaned_company: Dict[str, Any] = {}
-
-            # name の処理
-            if company.get('name'):
-                name = company['name']
-                if isinstance(name, str) and name.strip():
-                    cleaned_company['name'] = name.strip()
-
-             # address の処理
-            if company.get('address'):
-                cleaned_address: Dict[str, Any] = {}
-                for key, value in company['address'].items():
-                    if value is None:
-                        continue
-                    if value == '':
-                        continue
-                    if isinstance(value, str):
-                        value = value.strip()
-                        if value == '':
-                            continue
-
-                if cleaned_address:
-                    cleaned_company['address'] = cleaned_address
-
-        # Individual (Representative)
-        individual = payload.get('individual') or {}
-        if individual:
-            # 電話番号をE.164形式に変換
-            if individual.get('phone'):
-                individual['phone'] = format_phone_number_for_stripe(individual['phone'])
-
-            # address_kanji の処理
-            if individual.get('address_kanji'):
-                address_kanji = individual['address_kanji']
-                if not address_kanji.get('country'):
-                    address_kanji['country'] = 'JP'
-                # country 以外のフィールドに有効な値があるかチェック
-                other_fields = {key: value for key, value in address_kanji.items() if key != 'country'}
-                has_valid_field = any(other_fields.values())
-                if has_valid_field:
-                    individual['address_kanji'] = address_kanji
-                else:
-                    del individual['address_kanji']
-
-            # address_kana の処理
-            if individual.get('address_kana'):
-                address_kana = individual['address_kana']
-                if not address_kana.get('country'):
-                    address_kana['country'] = 'JP'
-                # country 以外のフィールドに有効な値があるかチェック
-                other_fields = {key: value for key, value in address_kana.items() if key != 'country'}
-                has_valid_field = any(other_fields.values())
-                if has_valid_field:
-                    individual['address_kana'] = address_kana
-                else:
-                    del individual['address_kana']
-
-            # 本人確認書類の処理
-            verification = payload.get('verification') or {}
-            verification_params: Dict[str, Any] = {}
-
-            if verification.get('document_front') or verification.get('document_back'):
-                verification_params['document'] = {}
-                if verification.get('document_front'):
-                    verification_params['document']['front'] = verification['document_front']
-                if verification.get('document_back'):
-                    verification_params['document']['back'] = verification['document_back']
-
-            if verification_params:
-                individual['verification'] = verification_params
-
-            update_params['individual'] = individual
-
-        # External Account (Bank Account)の処理
-        external_account = payload.get('external_account') or {}
-        if external_account:
-            bank_code = external_account.get('bank_code')
-            branch_code = external_account.get('branch_code')
-            account_number = external_account.get('account_number')
-            account_holder_name = external_account.get('account_holder_name')
-            account_type = external_account.get('account_type')
-
-            if all([bank_code, branch_code, account_number, account_holder_name]):
-                update_params['external_account'] = {
-                    'object': 'bank_account',
-                    'country': 'JP',
-                    'currency': 'jpy',
-                    'routing_number': f'{bank_code}{branch_code}',
-                    'account_number': account_number,
-                    'account_holder_name': account_holder_name,
-                    'account_holder_type': 'company' if account_type == 'toza' else 'individual',
-                }
-
-        # 必要に応じて、利用規約の同意を記録
-        account = stripe.Account.retrieve(account_id)
-        tos_acceptance = getattr(account, 'tos_acceptance', None)
-        needs_tos = tos_acceptance is None or tos_acceptance.get('date') is None
-
-        if needs_tos:
-            ip = request.META.get('REMOTE_ADDR')
-            user_agent = request.META.get('HTTP_USER_AGENT')
-            if ip and user_agent:
-                update_params['tos_acceptance'] = {
-                    'date': int(time.time()),
-                    'ip': ip,
-                    'user_agent': user_agent,
-                }
-
-        if update_params:
-            stripe.Account.modify(account_id, **update_params)
-            account = stripe.Account.retrieve(account_id)
-            logger.info(
-                f"Stripeアカウント更新成功（公開API）: account_id={mask_sensitive_id(account_id)}"
+        if not email:
+            return Response(
+                {'error': 'メールアドレスが指定されていません。'},
+                status=status.HTTP_400_BAD_REQUEST
             )
-        else:
-            account = stripe.Account.retrieve(account_id)
 
-        return Response({'account': account})
-    except stripe.error.StripeError as e:  # type: ignore[attr-defined]
-        logger.error(
-            f"Stripeアカウント更新エラー（公開API）: account_id={mask_sensitive_id(account_id)}, "
-            f"error={str(e)}"
-        )
-        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        # メールアドレスの形式チェック
+        try:
+            validate_email(email)
+        except DjangoValidationError:
+            return Response(
+                {'error': '有効なメールアドレスを入力してください。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def public_custom_upload_verification_document(request: Request) -> Response:
-    """本人確認書類をStripeにアップロード"""
-    try:
-        session_key = ANON_STRIPE_ACCOUNT_SESSION_KEY
-        account_id = request.session.get(session_key)
-        if not account_id:
-            return Response({'error': 'セッションが失われました。最初から登録をやり直してください。', 'restart': True}, status=status.HTTP_400_BAD_REQUEST)
-
-        file = request.FILES.get('file')
-        if not file:
-            return Response({'error': 'ファイルが選択されていません。'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # ファイルタイプの検証
-        is_valid, error_message = validate_file_type(file)
-        if not is_valid:
-            return Response({'error': error_message}, status=status.HTTP_400_BAD_REQUEST)
-
-        # ファイルサイズチェック（10MB）
-        if file.size > settings.LUGGO_MAX_FILE_SIZE:
-            return Response({'error': f'ファイルサイズは{settings.LUGGO_MAX_FILE_SIZE // (1024 * 1024)}MB以下にしてください。'}, status=status.HTTP_400_BAD_REQUEST)
-
-        file_content = file.read()
-
-        # Stripe File APIにアップロード
-        # purpose='identity_document' は本人確認書類用
-        # file_nameパラメータはStripe APIでサポートされていないため削除
-        stripe_file = stripe.File.create(
-            purpose='identity_document',
-            file=io.BytesIO(file_content),
-        )
-
-        logger.info(
-            f"本人確認書類アップロード成功: file_id={mask_sensitive_id(stripe_file.id)}, "
-            f"account_id={mask_sensitive_id(account_id)}"
-        )
+        # 重複チェック
+        if User.objects.filter(email=email).exists():
+            return Response({
+                'available': False,
+                'message': 'このメールアドレスは既に登録されています。',
+            }, status=status.HTTP_200_OK)
 
         return Response({
-            'file_id': stripe_file.id,
-        })
-    except stripe.error.StripeError as e:  # type: ignore[attr-defined]
-        logger.error(
-            f"本人確認書類アップロードエラー: account_id={mask_sensitive_id(account_id)}, "
-            f"error={str(e)}"
-        )
-        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            'available': True,
+            'message': 'このメールアドレスは使用できます。',
+        }, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(
-            f"本人確認書類アップロード予期しないエラー: account_id={mask_sensitive_id(account_id)}, "
-            f"error={str(e)}",
+            f"メールアドレス重複チェックエラー: error={str(e)}",
+            exc_info=True
+        )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def request_registration_email(request: Request) -> Response:
+    """登録用メール送信リクエストAPI"""
+    try:
+        serializer = RegistrationRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email'].lower()
+
+        # レート制限: 同じメールアドレスに対して5分以内に複数回送信しない
+        recent_token = RegistrationToken.objects.filter(
+            email=email,
+            created_at__gte=timezone.now() - timezone.timedelta(minutes=5)
+        ).first()
+
+        if recent_token:
+            return Response(
+                {'error': 'メール送信は5分に1回までです。しばらく時間をおいて再度お試しください。'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
+        # トークンを生成
+        registration_token = generate_registration_token(email)
+
+        # メールを送信
+        success = send_registration_email(email, registration_token.token)
+
+        if not success:
+            logger.error(
+                f"登録メール送信リクエスト失敗: email={email}",
+                exc_info=True
+            )
+            return Response(
+                {'error': 'メールの送信に失敗しました。しばらく時間をおいて再度お試しください。'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        logger.info(f"登録メール送信リクエスト成功: email={email}")
+
+        return Response({
+            'message': 'メールを送信しました。メール内のリンクから登録を行なってください。',
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(
+            f"登録メール送信リクエストエラー: error={str(e)}",
             exc_info=True
         )
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -841,77 +627,130 @@ def public_custom_upload_verification_document(request: Request) -> Response:
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
-def public_custom_account_requirements(request: Request) -> Response:
-    """
-    ログイン前のユーザーがセッションに保存されたStripeアカウントの審査要件の状態を取得するためのAPIエンドポイント
-    """
+def verify_registration_token_api(request: Request) -> Response:
+    """登録トークンの検証API"""
     try:
-        session_key = ANON_STRIPE_ACCOUNT_SESSION_KEY
-        account_id = request.session.get(session_key)
-        if not account_id:
-            return Response({'error': 'セッションが失われました。最初から登録をやり直してください。', 'restart': True}, status=status.HTTP_400_BAD_REQUEST)
-        account = stripe.Account.retrieve(account_id)
-        req = account.requirements
+        token = request.query_params.get('token', '').strip()
+
+        # デバッグログ
+        logger.info(f"トークン検証リクエスト: token={token[:20]}..., query_params={dict(request.query_params)}")
+
+        if not token:
+            logger.warning("トークンが指定されていません")
+            return Response(
+                {'error': 'トークンが指定されていません。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        registration_token = verify_registration_token(token)
+
+        if not registration_token:
+            logger.warning(f"トークンが見つからないか無効: token={token[:20]}...")
+            return Response(
+                {'error': '有効期限が切れています。お手数おかけしますが、もう一度いちからやり直してください。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        logger.info(f"トークン検証成功: email={registration_token.email}")
         return Response({
-            'currently_due': req.get('currently_due', []) if req else [],
-            'eventually_due': req.get('eventually_due', []) if req else [],
-            'past_due': req.get('past_due', []) if req else [],
-        })
-    except stripe.error.StripeError as e:  # type: ignore[attr-defined]
+            'valid': True,
+            'email': registration_token.email,
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
         logger.error(
-            f"Stripeアカウント要件取得エラー（公開API）: account_id={mask_sensitive_id(account_id)}, "
-            f"error={str(e)}"
+            f"トークン検証エラー: error={str(e)}",
+            exc_info=True
         )
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
-def register_business_owner(request: Request) -> Response:
-    """事業者専用の登録API（Stripeセッション統合）"""
+def register_business_account(request: Request) -> Response:
+    """事業者アカウント登録API（トークン必須）"""
     try:
-        serializer = BusinessOwnerRegistrationSerializer(data=request.data)
+        serializer = BusinessAccountRegistrationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+
+        # トークンを再検証（念のため）
+        registration_token = verify_registration_token(data['token'])
+        if not registration_token:
+            return Response(
+                {'error': '有効期限が切れています。お手数おかけしますが、もう一度いちからやり直してください。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # トークンとメールアドレスの一致確認
+        if registration_token.email.lower() != data['email'].lower():
+            return Response(
+                {'error': '送信されたメールアドレスと一致しません。正しいメールアドレスを入力してください。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # User作成
+        # rep_nameをfirst_nameとlast_nameに分割
+        rep_name_parts = data['rep_name'].strip().split(maxsplit=1)
+        first_name = rep_name_parts[0] if rep_name_parts else ''
+        last_name = rep_name_parts[1] if len(rep_name_parts) > 1 else ''
 
         user = User.objects.create_user(
             email=data['email'],
             password=data['password'],
-            user_type='business_owner'
+            user_type='business_owner',
+            phone_number=data['phone'],
+            first_name=first_name,
+            last_name=last_name,
         )
 
-        # セッションのStripeアカウントIDをBusinessProfileへ移行
-        session_key = ANON_STRIPE_ACCOUNT_SESSION_KEY
-        account_id = request.session.get(session_key)
-        company_name = data.get('company_name') or ''
-        if account_id:
-            BusinessProfile.objects.create(
-                user=user,
-                stripe_account_id=account_id,
-                company_name=company_name,
-            )
-            del request.session[session_key]
-            request.session.modified = True
+        # BusinessProfile作成
+        BusinessProfile.objects.create(
+            user=user,
+            company_name=data['company_name'],
+            company_email=data['email'],
+            subdomain=data['subdomain'],
+            stripe_account_id='',  # Stripeアカウントは後で管理画面から作成
+        )
+
+        # トークンを使用済みとしてマーク
+        registration_token.mark_as_used()
 
         logger.info(
-            f"事業者登録成功: user_id={mask_sensitive_id(user.id)}, "
-            f"account_id={mask_sensitive_id(account_id) if account_id else 'None'}, "
-            f"email={user.email}"
+            f"事業者アカウント登録成功: user_id={mask_sensitive_id(user.id)}, "
+            f"subdomain={data['subdomain']}, email={user.email}"
         )
 
         return Response({
-            'message': '事業者登録が完了しました',
+            'message': 'アカウント登録が完了しました',
             'user_id': str(user.id),
-            'has_stripe_account': bool(getattr(user, 'business_profile', None) and user.business_profile.stripe_account_id),
+            'subdomain': data['subdomain'],
         }, status=status.HTTP_201_CREATED)
-    except stripe.error.StripeError as e:  # type: ignore[attr-defined]
+
+    # シリアライザーのバリデーションエラーを処理
+    except ValidationError as e:
+        return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
+
+    # データベースのユニーク制約違反をチェック
+    except IntegrityError as e:
+        error_message = str(e)
+        # 予約フォームのURLの重複エラーをチェック
+        if 'subdomain' in error_message.lower():
+            logger.warning(
+                f"予約フォームのURL重複エラー: {error_message}"
+            )
+            return Response({
+                'subdomain': ['この予約フォームのURLは既に使用されています。別の文字列を選択してください。']
+            }, status=status.HTTP_400_BAD_REQUEST)
+        # その他のIntegrityError（例：emailの重複など）
         logger.error(
-            f"事業者登録エラー（Stripe）: error={str(e)}"
+            f"データベース整合性エラー: error={str(e)}",
+            exc_info=True
         )
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
     except Exception as e:
         logger.error(
-            f"事業者登録エラー: error={str(e)}",
+            f"事業者アカウント登録エラー: error={str(e)}",
             exc_info=True
         )
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
