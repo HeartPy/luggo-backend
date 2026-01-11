@@ -60,7 +60,7 @@ class BusinessProfileAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # djang
 
     fieldsets = (
         ('基本情報', {
-            'fields': ('user', 'company_name', 'company_email', 'tax_id')
+            'fields': ('company_name', 'company_email', 'tax_id')
         }),
         ('サービス情報', {
             'fields': ('service_areas', 'max_luggage_capacity'),

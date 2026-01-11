@@ -35,8 +35,6 @@ logger = logging.getLogger(__name__)
 
 BusinessType = Literal['company', 'individual']
 
-ANON_STRIPE_ACCOUNT_SESSION_KEY = settings.ANON_STRIPE_ACCOUNT_SESSION_KEY
-
 
 def validate_file_type(file: Any) -> Tuple[bool, Optional[str]]:
     """ファイルタイプを検証する"""
