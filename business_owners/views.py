@@ -543,10 +543,40 @@ def custom_account_requirements(request: Request) -> Response:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_business_profile_by_subdomain(request: Request) -> Response:
+    """予約フォームのURLからBusinessProfileを取得"""
     try:
+        subdomain = request.query_params.get('subdomain', '').strip().lower()
 
+        if not subdomain:
+            return Response(
+                {'error': '予約フォームのURLが指定されていません。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
+        try:
+            business_profile = BusinessProfile.objects.get(
+                subdomain=subdomain,
+                is_active=True
+            )
+        except BusinessProfile.DoesNotExist:
+            return Response(
+                {'error': '指定された予約フォームのURLの事業者が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({
+            'id': str(business_profile.id),
+            'company_name': business_profile.company_name,
+            'subdomain': business_profile.subdomain,
+            'is_active': business_profile.is_active,
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
         logger.error(
+            f"予約フォームのURL取得エラー: error={str(e)}",
+            exc_info=True
         )
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

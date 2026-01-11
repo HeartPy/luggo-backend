@@ -14,4 +14,7 @@ urlpatterns: list[URLPattern] = [
     path('account/register/request', views.request_registration_email, name='request_registration_email'),
     path('account/register/verify', views.verify_registration_token_api, name='verify_registration_token'),
     path('account/register', views.register_business_account, name='register_business_account'),
+
+    # サブドメイン関連
+    path('subdomain/profile', views.get_business_profile_by_subdomain, name='get_business_profile_by_subdomain'),
 ]
