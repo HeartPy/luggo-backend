@@ -186,6 +186,75 @@ def custom_get_account(request: Request) -> Response:
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+def custom_create_account(request: Request) -> Response:
+    """ログイン後のユーザーがStripeアカウントを作成するためのAPIエンドポイント"""
+    try:
+        # BusinessProfileの存在確認
+        if not hasattr(request.user, 'business_profile'):
+            return Response(
+                {'error': '事業者プロフィールが見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        business_profile = request.user.business_profile
+
+        # 既にStripeアカウントが存在する場合はエラー
+        if business_profile.stripe_account_id:
+            return Response(
+                {'error': '既にStripeアカウントが作成されています。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # business_typeを取得（デフォルトは'individual'）
+        business_type = request.data.get('business_type', 'individual')
+        typed_business_type = cast(BusinessType, business_type)
+
+        # Stripeアカウントを作成
+        account = stripe.Account.create(
+            type='custom',
+            country='JP',
+            business_type=typed_business_type,
+            capabilities={
+                'transfers': {'requested': True},
+                'card_payments': {'requested': True},
+            },
+            settings={
+                'payouts': {
+                    'schedule': {'interval': 'monthly', 'monthly_anchor': 25}
+                }
+            },
+        )
+
+        # BusinessProfileにStripeアカウントIDを保存
+        business_profile.stripe_account_id = account.id
+        business_profile.save()
+
+        logger.info(
+            f"Stripeアカウント作成成功: account_id={mask_sensitive_id(account.id)}, "
+            f"user_id={mask_sensitive_id(request.user.id)}, business_type={typed_business_type}"
+        )
+
+        return Response({
+            'account_id': account.id,
+            'account': account,
+            'message': 'Stripeアカウントが作成されました。'
+        }, status=status.HTTP_201_CREATED)
+
+    except stripe.error.StripeError as e:  # type: ignore[attr-defined]
+        logger.error(
+            f"Stripeアカウント作成エラー: user_id={mask_sensitive_id(request.user.id)}, error={str(e)}"
+        )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.error(
+            f"Stripeアカウント作成エラー（ログイン後）: user_id={mask_sensitive_id(request.user.id)}, error={str(e)}",
+            exc_info=True
+        )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def custom_update_account(request: Request) -> Response:
     """Stripeアカウントの情報を更新するためのAPIエンドポイント"""
     try:
@@ -474,62 +543,10 @@ def custom_account_requirements(request: Request) -> Response:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-def _get_or_create_custom_connect_account_for_session(request: Request, business_type: str = 'individual') -> str:
-    """
-    セッションに保存されたStripeアカウントIDを取得、または新規作成してセッションに保存
-    ログイン前のユーザーがStripeアカウント登録を開始する際に使用される
-    """
-    session_key = ANON_STRIPE_ACCOUNT_SESSION_KEY
-    account_id: Optional[str] = request.session.get(session_key)
-    if account_id:
-        return account_id
-
-    typed_business_type = cast(BusinessType, business_type)
-
     try:
-        account = stripe.Account.create(
-            type='custom',
-            country='JP',
-            business_type=typed_business_type,
-            capabilities={
-                'transfers': {'requested': True},
-                'card_payments': {'requested': True},
-            },
-            settings={
-                'payouts': {
-                    'schedule': {'interval': 'monthly', 'monthly_anchor': 25}
-                }
-            },
-        )
-        request.session[session_key] = account.id
-        request.session.modified = True
-        logger.info(
-            f"Stripeアカウント作成成功: account_id={mask_sensitive_id(account.id)}, "
-            f"business_type={typed_business_type}"
-        )
-        return account.id
-    except stripe.error.StripeError as e:  # type: ignore[attr-defined]
-        logger.error(
-            f"Stripeアカウント作成エラー: business_type={typed_business_type}, error={str(e)}"
-        )
-        raise
 
 
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def public_custom_create_or_get_account(request: Request) -> Response:
-    """
-    ログイン前のユーザーがStripeアカウントを作成または取得するための公開APIエンドポイント
-    セッションに保存されたアカウントIDを返す（存在しない場合は新規作成）
-    """
-    business_type = request.data.get('business_type', 'individual')
-    typed_business_type = cast(BusinessType, business_type)
-    try:
-        account_id = _get_or_create_custom_connect_account_for_session(request, business_type=typed_business_type)
-        return Response({'account_id': account_id})
-    except stripe.error.StripeError as e:  # type: ignore[attr-defined]
         logger.error(
-            f"Stripeアカウント作成・取得エラー: business_type={typed_business_type}, error={str(e)}"
         )
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
