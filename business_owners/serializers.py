@@ -4,7 +4,12 @@ try:
 except ImportError:
     # Python 3.9以下ではtyping_extensionsを使用
     from typing_extensions import Required
+import re
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
+
+from .models import BusinessProfile, validate_subdomain
+from .utils import verify_registration_token
 
 BusinessType = Literal['company', 'individual']
 
@@ -88,11 +93,22 @@ class CustomAccountUpdateData(TypedDict, total=False):
     verification: VerificationData
 
 
-class BusinessOwnerRegistrationData(TypedDict, total=False):
+class RegistrationRequestData(TypedDict, total=False):
     email: Required[str]
+
+
+class RegistrationTokenVerifyData(TypedDict, total=False):
+    token: Required[str]
+
+
+class BusinessAccountRegistrationData(TypedDict, total=False):
+    token: Required[str]
+    company_name: Required[str]
+    rep_name: Required[str]
+    email: Required[str]
+    phone: Required[str]
+    subdomain: Required[str]
     password: Required[str]
-    business_type: BusinessType
-    company_name: str
 
 
 class BusinessProfileSerializer(serializers.Serializer[BusinessProfileData]):
@@ -181,23 +197,90 @@ class CustomAccountUpdateSerializer(serializers.Serializer[CustomAccountUpdateDa
         return attrs
 
 
-class BusinessOwnerRegistrationSerializer(serializers.Serializer[BusinessOwnerRegistrationData]):
-    email = serializers.EmailField()
-    password = serializers.CharField(min_length=8, write_only=True)
-    business_type = serializers.ChoiceField(choices=['individual', 'company'], required=False, default='individual')
-    company_name = serializers.CharField(required=False, allow_blank=True)
+class RegistrationRequestSerializer(serializers.Serializer[RegistrationRequestData]):
+    email = serializers.EmailField(required=True)
 
-    def validate(self, data: BusinessOwnerRegistrationData) -> BusinessOwnerRegistrationData:
-        business_type: BusinessType = data.get('business_type', 'individual')
-        company_name = data.get('company_name', '').strip()
+    def validate_email(self, value: str) -> str:
+        """メールアドレスの重複チェック"""
+        User = get_user_model()
+        if User.objects.filter(email=value.lower()).exists():
+            raise serializers.ValidationError("このメールアドレスは既に登録されています。")
+        return value.lower()
 
-        if business_type == 'company' and not company_name:
-            raise serializers.ValidationError("法人の場合、会社名は必須です。登記簿上の正式名称を入力してください")
 
-        if business_type == 'individual' and not company_name:
-            raise serializers.ValidationError("個人事業主の場合、屋号は必須です。屋号がない場合は、代表者名(姓＋名)を入力してください")
+class RegistrationTokenVerifySerializer(serializers.Serializer[RegistrationTokenVerifyData]):
+    token = serializers.CharField(required=True)
 
-        return data
+
+class BusinessAccountRegistrationSerializer(serializers.Serializer[BusinessAccountRegistrationData]):
+    token = serializers.CharField(required=True)
+    company_name = serializers.CharField(max_length=100, required=True)
+    rep_name = serializers.CharField(max_length=50, required=True)
+    email = serializers.EmailField(required=True)
+    phone = serializers.CharField(max_length=15, required=True)
+    subdomain = serializers.CharField(min_length=3, max_length=12, required=True)
+    password = serializers.CharField(
+        min_length=8,
+        max_length=16,
+        write_only=True,
+        required=True,
+    )
+
+    def validate_password(self, value: str) -> str:
+        """パスワードのバリデーション：半角英数字+記号、8文字以上16文字以内、3種類以上"""
+        # 使用可能な文字種のチェック（半角英数字+記号）
+        if not re.match(r'^[a-zA-Z0-9!@#$%^&*()_+\-=\[\]{}|;:,.<>?]+$', value):
+            raise serializers.ValidationError("パスワードは半角英数字と記号のみ使用できます。")
+
+        # 長さのチェック
+        if len(value) < 8 or len(value) > 16:
+            raise serializers.ValidationError("パスワードは8文字以上16文字以内で入力してください。")
+
+        # 複雑さのチェック（大文字・小文字・数字・記号のうち3種類以上）
+        has_upper = bool(re.search(r'[A-Z]', value))
+        has_lower = bool(re.search(r'[a-z]', value))
+        has_number = bool(re.search(r'[0-9]', value))
+        has_special = bool(re.search(r'[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]', value))
+
+        types_count = sum([has_upper, has_lower, has_number, has_special])
+        if types_count < 3:
+            raise serializers.ValidationError(
+                "パスワードは大文字・小文字・数字・記号のうち3種類以上を含む必要があります。"
+            )
+
+        return value
+
+    def validate_token(self, value: str) -> str:
+        """トークンの検証"""
+        registration_token = verify_registration_token(value)
+        if not registration_token:
+            raise serializers.ValidationError("有効期限が切れています。お手数おかけしますが、もう一度いちからやり直してください。")
+        return value
+
+    def validate_subdomain(self, value: str) -> str:
+        """予約フォームのURLのバリデーション"""
+        # モデルのバリデーターを使用
+        validate_subdomain(value)
+
+        # 重複チェック
+        if BusinessProfile.objects.filter(subdomain=value.lower()).exists():
+            raise serializers.ValidationError("この予約フォームのURLは既に使用されています。別の文字列を選択してください。")
+
+        return value.lower()
+
+    def validate_email(self, value: str) -> str:
+        """メールアドレスの重複チェックとトークンとの一致確認"""
+        User = get_user_model()
+        if User.objects.filter(email=value.lower()).exists():
+            raise serializers.ValidationError("このメールアドレスは既に登録されています。")
+
+        # トークンとメールアドレスの一致確認
+        if hasattr(self, 'initial_data') and 'token' in self.initial_data:
+            registration_token = verify_registration_token(self.initial_data['token'])
+            if registration_token and registration_token.email.lower() != value.lower():
+                raise serializers.ValidationError("送信されたメールアドレスと一致しません。正しいメールアドレスを入力してください。")
+
+        return value.lower()
 
 
 __all__ = [
@@ -205,5 +288,4 @@ __all__ = [
     "AddressSerializer",
     "CompanySerializer",
     "CustomAccountUpdateSerializer",
-    "BusinessOwnerRegistrationSerializer",
 ]

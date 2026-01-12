@@ -98,9 +98,6 @@ USE_TZ = True
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_DIRS = [
-    BASE_DIR / "static",
-]
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
@@ -114,6 +111,12 @@ CORS_ALLOWED_ORIGINS = config(
 )
 
 CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='http://localhost:3000,http://127.0.0.1:3000',
+    cast=lambda value: [item.strip() for item in value.split(',')]
+)
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
@@ -141,7 +144,7 @@ EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
 EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
 EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@luggo.com')
 
 # ファイルアップロード設定
 LUGGO_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -169,7 +172,6 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 # Stripe設定
 STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY', default='')
 STRIPE_WEBHOOK_SECRET = config('STRIPE_WEBHOOK_SECRET', default='')
-ANON_STRIPE_ACCOUNT_SESSION_KEY = config('ANON_STRIPE_ACCOUNT_SESSION_KEY', default='anon_stripe_account_id')
 
 # フロントエンドのベースURL
 FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='http://localhost:3000')
