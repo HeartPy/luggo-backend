@@ -28,6 +28,11 @@ LOGGING = {
             'handlers': ['console'],
             'level': 'WARNING',
         },
+        'users': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
         'business_owners': {
             'handlers': ['console'],
             'level': 'WARNING',

@@ -1,5 +1,5 @@
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.request import Request
 from rest_framework import status
@@ -7,6 +7,9 @@ from django.middleware.csrf import get_token
 from django.contrib.sessions.models import Session
 from django.utils import timezone
 from django.conf import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @api_view(["GET"])
@@ -31,6 +34,17 @@ def get_csrf_token(request: Request) -> Response:
 @permission_classes([AllowAny])
 def start_session(request: Request) -> Response:
     """セッションを開始"""
+    # セッションタイプを取得（デフォルトは一時セッション）
+    session_type = request.data.get('session_type', 'temporary')
+
+    # セッションタイプに応じて有効期限を設定
+    if session_type == 'temporary':
+        # 一時セッション（予約フロー、アカウント登録、Stripe設定等）：30分
+        request.session.set_expiry(settings.TEMPORARY_SESSION_COOKIE_AGE)
+    else:
+        # 通常のセッション（ログイン用）：1時間
+        request.session.set_expiry(settings.SESSION_COOKIE_AGE)
+
     request.session.save()
 
     session_key = request.session.session_key
@@ -41,12 +55,14 @@ def start_session(request: Request) -> Response:
             return Response({
                 "sessionStarted": True,
                 "expiresAt": expire_date.isoformat() if expire_date else None,
+                "sessionType": session_type,
             }, status=status.HTTP_200_OK)
         except Session.DoesNotExist:
             pass
 
     return Response({
         "sessionStarted": True,
+        "sessionType": session_type,
     }, status=status.HTTP_200_OK)
 
 
@@ -88,15 +104,3 @@ def check_session_validity(request: Request) -> Response:
             "valid": False,
             "message": "セッションが見つかりません",
         }, status=status.HTTP_200_OK)
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def check_authentication(request: Request) -> Response:
-    """認証状態をチェックするエンドポイント"""
-    return Response({
-        "authenticated": True,
-        "user_id": str(request.user.id),
-        "email": request.user.email,
-        "user_type": request.user.user_type,
-    }, status=status.HTTP_200_OK)

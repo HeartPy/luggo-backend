@@ -2,6 +2,7 @@ from django.contrib.auth.models import AbstractUser
 from django.contrib.auth.base_user import BaseUserManager
 from django.db import models
 from django.core.validators import RegexValidator
+from django.utils import timezone
 from typing import Any, Dict, Optional
 import uuid
 
@@ -88,6 +89,9 @@ class User(AbstractUser):
     # アカウント管理
     is_verified = models.BooleanField(default=False)
     verification_code = models.CharField(max_length=6, blank=True)
+    verification_code_expires_at = models.DateTimeField(null=True, blank=True, verbose_name='認証コード有効期限')
+    verification_code_attempts = models.IntegerField(default=0, verbose_name='認証コード検証失敗回数')
+    login_session_started_at = models.DateTimeField(null=True, blank=True, verbose_name='ログインセッション開始時刻')
     last_active = models.DateTimeField(auto_now=True)
 
     # 通知設定
@@ -132,11 +136,51 @@ class User(AbstractUser):
     def get_dashboard_url(self) -> str:
         """ユーザータイプ別のダッシュボードURL"""
         urls: Dict[str, str] = {
-            'business_owner': '/dashboard/business',
-            'delivery_driver': '/dashboard/driver',
-            'admin': '/admin',
+            'business_owner': '/business-owner/dashboard',
+            'delivery_driver': '/driver/dashboard',
+            'admin': '/admin/dashboard',
         }
         return urls.get(self.user_type, '/')
 
     def get_full_name(self) -> str:
         return f"{self.last_name} {self.first_name}".strip() or self.email
+
+
+class PasswordResetToken(models.Model):
+    """パスワード再設定用のトークンモデル"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='password_reset_tokens',
+        verbose_name='ユーザー',
+    )
+    token = models.CharField(max_length=64, unique=True, db_index=True, verbose_name='トークン')
+    expires_at = models.DateTimeField(verbose_name='有効期限')
+    used_at = models.DateTimeField(null=True, blank=True, verbose_name='使用日時')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日時')
+
+    class Meta:
+        db_table = 'password_reset_tokens'
+        verbose_name = 'パスワード再設定トークン'
+        verbose_name_plural = 'パスワード再設定トークン'
+        indexes = [
+            models.Index(fields=['user', 'expires_at']),
+            models.Index(fields=['token']),
+        ]
+
+    def __str__(self) -> str:
+        return f"PasswordResetToken: {self.user.email}"
+
+    def is_valid(self) -> bool:
+        """トークンが有効かどうかをチェック"""
+        if self.used_at is not None:
+            return False
+        if timezone.now() > self.expires_at:
+            return False
+        return True
+
+    def mark_as_used(self) -> None:
+        """トークンを使用済みとしてマーク"""
+        self.used_at = timezone.now()
+        self.save(update_fields=['used_at'])

@@ -4,12 +4,12 @@ try:
 except ImportError:
     # Python 3.9以下ではtyping_extensionsを使用
     from typing_extensions import Required
-import re
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
 from .models import BusinessProfile, validate_subdomain
 from .utils import verify_registration_token
+from users.validators import validate_password_strength
 
 BusinessType = Literal['company', 'individual']
 
@@ -228,25 +228,9 @@ class BusinessAccountRegistrationSerializer(serializers.Serializer[BusinessAccou
 
     def validate_password(self, value: str) -> str:
         """パスワードのバリデーション：半角英数字+記号、8文字以上16文字以内、3種類以上"""
-        # 使用可能な文字種のチェック（半角英数字+記号）
-        if not re.match(r'^[a-zA-Z0-9!@#$%^&*()_+\-=\[\]{}|;:,.<>?]+$', value):
-            raise serializers.ValidationError("パスワードは半角英数字と記号のみ使用できます。")
-
-        # 長さのチェック
-        if len(value) < 8 or len(value) > 16:
-            raise serializers.ValidationError("パスワードは8文字以上16文字以内で入力してください。")
-
-        # 複雑さのチェック（大文字・小文字・数字・記号のうち3種類以上）
-        has_upper = bool(re.search(r'[A-Z]', value))
-        has_lower = bool(re.search(r'[a-z]', value))
-        has_number = bool(re.search(r'[0-9]', value))
-        has_special = bool(re.search(r'[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]', value))
-
-        types_count = sum([has_upper, has_lower, has_number, has_special])
-        if types_count < 3:
-            raise serializers.ValidationError(
-                "パスワードは大文字・小文字・数字・記号のうち3種類以上を含む必要があります。"
-            )
+        validation_error = validate_password_strength(value)
+        if validation_error:
+            raise serializers.ValidationError(validation_error)
 
         return value
 
