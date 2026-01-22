@@ -4,6 +4,7 @@ from . import views
 
 urlpatterns: list[URLPattern] = [
     # ログイン済み事業者向け
+    path('profile', views.get_current_business_profile, name='get_current_business_profile'),
     path('stripe/custom/account', views.custom_get_account, name='stripe_custom_get_account'),
     path('stripe/custom/create-account', views.custom_create_account, name='stripe_custom_create_account'),
     path('stripe/custom/update-account', views.custom_update_account, name='stripe_custom_update_account'),

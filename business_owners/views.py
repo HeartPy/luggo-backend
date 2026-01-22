@@ -543,6 +543,49 @@ def custom_account_requirements(request: Request) -> Response:
 
 
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_current_business_profile(request: Request) -> Response:
+    """現在ログイン中のビジネスオーナーのプロフィール情報を取得"""
+    try:
+        if not hasattr(request.user, 'business_profile'):
+            return Response(
+                {'error': '事業者情報が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        business_profile = request.user.business_profile
+
+        return Response({
+            'id': str(business_profile.id),
+            'company_name': business_profile.company_name,
+            'company_email': business_profile.company_email,
+            'subdomain': business_profile.subdomain,
+            'tax_id': business_profile.tax_id,
+            'service_areas': business_profile.service_areas,
+            'max_luggage_capacity': business_profile.max_luggage_capacity,
+            'operating_hours_start': business_profile.operating_hours_start.isoformat(),
+            'operating_hours_end': business_profile.operating_hours_end.isoformat(),
+            'operating_days': business_profile.operating_days,
+            'pricing_rules': business_profile.pricing_rules,
+            'total_orders_completed': business_profile.total_orders_completed,
+            'total_revenue': str(business_profile.total_revenue),
+            'is_approved': business_profile.is_approved,
+            'approval_date': business_profile.approval_date.isoformat() if business_profile.approval_date else None,
+            'is_active': business_profile.is_active,
+            'deactivated_at': business_profile.deactivated_at.isoformat() if business_profile.deactivated_at else None,
+            'created_at': business_profile.created_at.isoformat(),
+            'updated_at': business_profile.updated_at.isoformat(),
+            'has_stripe_account': bool(business_profile.stripe_account_id),
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(
+            f"ビジネスオーナープロフィール取得エラー: user_id={mask_sensitive_id(request.user.id)}, error={str(e)}",
+            exc_info=True
+        )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
 @permission_classes([AllowAny])
 def get_business_profile_by_subdomain(request: Request) -> Response:
     """予約フォームのURLからBusinessProfileを取得"""
@@ -684,7 +727,7 @@ def verify_registration_token_api(request: Request) -> Response:
         if not token:
             logger.warning("トークンが指定されていません")
             return Response(
-                {'error': 'トークンが指定されていません。'},
+                {'error': 'リンクが正しくありません。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -693,7 +736,7 @@ def verify_registration_token_api(request: Request) -> Response:
         if not registration_token:
             logger.warning(f"トークンが見つからないか無効: token={token[:20]}...")
             return Response(
-                {'error': '有効期限が切れています。お手数おかけしますが、もう一度いちからやり直してください。'},
+                {'error': 'このリンクは有効期限が切れているか、既に使用済みです。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
