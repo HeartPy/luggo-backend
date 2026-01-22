@@ -1,13 +1,18 @@
-from typing import Any
+from typing import Union
 
 
-def mask_sensitive_id(id_value: Any, visible_chars: int = 4) -> str:
-    """機密情報（IDなど）の一部をマスクして返す"""
-    if id_value is None:
+def mask_sensitive_id(value: Union[str, bytes, None]) -> str:
+    """機密情報（IDなど）をマスクしてログ出力用の文字列を返す"""
+    if value is None:
         return "None"
 
-    id_str = str(id_value)
-    if len(id_str) <= visible_chars:
-        return "*" * len(id_str)
-
-    return id_str[:visible_chars] + "*" * (len(id_str) - visible_chars)
+    str_value = str(value)
+    if len(str_value) <= 8:
+        # 8文字以下の場合は全てマスク
+        return "***"
+    elif len(str_value) <= 16:
+        # 16文字以下の場合は最初の4文字と最後の4文字を表示
+        return f"{str_value[:4]}***{str_value[-4:]}"
+    else:
+        # 16文字より長い場合は最初の6文字と最後の6文字を表示
+        return f"{str_value[:6]}***{str_value[-6:]}"

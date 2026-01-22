@@ -247,7 +247,7 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
         if existing_booking:
             logger.info(
                 f"既存の予約を返却: payment_intent_id={mask_sensitive_id(payment_intent_id)}, "
-                f"booking_id={mask_sensitive_id(existing_booking.id)}"
+                f"booking_id={existing_booking.id}"
             )
             response_serializer = LuggageBookingSerializer(existing_booking)
             return Response(
@@ -356,7 +356,7 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
                     )
 
                     logger.info(
-                        f"予約作成成功: booking_id={mask_sensitive_id(booking.id)}, "
+                        f"予約作成成功: booking_id={booking.id}, "
                         f"payment_intent_id={mask_sensitive_id(payment_intent_id)}"
                     )
 
