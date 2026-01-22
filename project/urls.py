@@ -7,6 +7,7 @@ from typing import Union
 urlpatterns: list[Union[URLPattern, URLResolver]] = [
     path("admin/", admin.site.urls),
     path("api/common/", include('project.urls_common')),
+    path("api/users/", include('users.urls')),
     path("api/bookings/", include('bookings.urls')),
     path("api/business/", include('business_owners.urls')),
     path("api/drivers/", include('drivers.urls')),
