@@ -20,10 +20,12 @@ FORBIDDEN_SUBDOMAINS = {
     'private', 'secure', 'ssl', 'http', 'https', 'tcp', 'udp', 'ip', 'dns', 'domain',
     'subdomain', 'sub', 'domain', 'host', 'hosting', 'server', 'cloud', 'aws', 'azure',
     'google', 'microsoft', 'apple', 'facebook', 'twitter', 'instagram', 'youtube',
-    # 卑猥な単語（一部の例）
-    'sex', 'porn', 'xxx', 'nsfw',
-    # 暴力的な単語（一部の例）
-    'kill', 'death', 'violence', 'attack', 'war', 'fight',
+    # 卑猥・卑語
+    'sex', 'porn', 'xxx', 'nsfw', 'adult', 'erotic', 'nude', 'naked', 'hentai', 'fetish',
+    'fuck', 'shit', 'ass', 'dick', 'cock', 'cunt', 'bitch', 'whore',
+    # 暴力的な単語
+    'kill', 'death', 'violence', 'attack', 'war', 'fight', 'murder', 'blood', 'gun', 'bomb',
+    'terror', 'suicide', 'rape', 'abuse', 'torture', 'slaughter', 'weapon', 'hate',
 }
 
 
@@ -57,9 +59,21 @@ class BusinessProfile(models.Model):
     """事業者プロフィール"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='business_profile')
+    business_type = models.CharField(
+        max_length=20,
+        choices=[('company', '法人'), ('individual', '個人事業主')],
+        default='individual',
+        verbose_name='事業形態'
+    )
     company_name = models.CharField(max_length=100, verbose_name='会社名')
     company_email = models.EmailField(verbose_name='メールアドレス')
     tax_id = models.CharField(max_length=20, blank=True, verbose_name='法人番号')
+
+    # 代表者情報
+    rep_last_name_kanji = models.CharField(max_length=50, blank=True, verbose_name='代表者姓（漢字）')
+    rep_first_name_kanji = models.CharField(max_length=50, blank=True, verbose_name='代表者名（漢字）')
+    rep_last_name_kana = models.CharField(max_length=50, blank=True, verbose_name='代表者姓（カナ）')
+    rep_first_name_kana = models.CharField(max_length=50, blank=True, verbose_name='代表者名（カナ）')
 
     # サービス情報
     service_areas = models.JSONField(default=list, blank=True, verbose_name='事業所在地')
@@ -83,7 +97,7 @@ class BusinessProfile(models.Model):
 
     # アカウント状態
     is_approved = models.BooleanField(default=False, verbose_name='承認状態')
-    approval_date = models.DateTimeField(null=True, blank=True)
+    approval_date = models.DateTimeField(null=True, blank=True, verbose_name='承認日')
     is_active = models.BooleanField(default=True, verbose_name='有効/無効')
     deactivated_at = models.DateTimeField(null=True, blank=True, verbose_name='無効化日')
 
