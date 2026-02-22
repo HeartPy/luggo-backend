@@ -9,6 +9,7 @@ urlpatterns: list[URLPattern] = [
     path('stripe/custom/create-account', views.custom_create_account, name='stripe_custom_create_account'),
     path('stripe/custom/update-account', views.custom_update_account, name='stripe_custom_update_account'),
     path('stripe/custom/requirements', views.custom_account_requirements, name='stripe_custom_account_requirements'),
+    path('stripe/custom/upload-document', views.custom_upload_document, name='stripe_custom_upload_document'),
 
     # 新規登録
     path('account/register/check-email', views.check_email_availability, name='check_email_availability'),

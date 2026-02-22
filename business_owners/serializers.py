@@ -1,3 +1,4 @@
+import re
 from typing import TypedDict, Literal
 try:
     from typing import Required
@@ -15,6 +16,8 @@ BusinessType = Literal['company', 'individual']
 
 
 class BusinessProfileData(TypedDict, total=False):
+    # 注意: Stripe APIのbusiness_profileはname_kanaをサポートしていない
+    # name_kanaはcompanyオブジェクトにのみ存在する
     name: str
     support_email: str
     url: str
@@ -34,21 +37,11 @@ class AddressData(TypedDict, total=False):
     line2: str
 
 
-class CompanyData(TypedDict, total=False):
-    name: str
-    address: AddressData
-
-
-class DateOfBirthData(TypedDict, total=False):
-    year: int
-    month: int
-    day: int
-
-
 class AddressKanjiData(TypedDict, total=False):
     postal_code: str
     state: str
     city: str
+    town: str
     line1: str
     line2: str
 
@@ -57,7 +50,26 @@ class AddressKanaData(TypedDict, total=False):
     postal_code: str
     state: str
     city: str
+    town: str
     line1: str
+
+
+class CompanyData(TypedDict, total=False):
+    name: str
+    name_kanji: str
+    name_kana: str
+    phone: str
+    tax_id: str
+    address: AddressData
+    address_kanji: AddressKanjiData
+    address_kana: AddressKanaData
+    directors_provided: bool
+
+
+class DateOfBirthData(TypedDict, total=False):
+    year: int
+    month: int
+    day: int
 
 
 class IndividualData(TypedDict, total=False):
@@ -85,12 +97,23 @@ class VerificationData(TypedDict, total=False):
     document_back: str
 
 
+class SettingsPaymentsData(TypedDict, total=False):
+    statement_descriptor_kanji: str
+    statement_descriptor_kana: str
+    statement_descriptor: str
+
+
+class SettingsData(TypedDict, total=False):
+    payments: SettingsPaymentsData
+
+
 class CustomAccountUpdateData(TypedDict, total=False):
     business_profile: BusinessProfileData
     company: CompanyData
     individual: IndividualData
     external_account: ExternalAccountData
     verification: VerificationData
+    settings: SettingsData
 
 
 class RegistrationRequestData(TypedDict, total=False):
@@ -103,8 +126,12 @@ class RegistrationTokenVerifyData(TypedDict, total=False):
 
 class BusinessAccountRegistrationData(TypedDict, total=False):
     token: Required[str]
+    business_type: Required[str]
     company_name: Required[str]
-    rep_name: Required[str]
+    rep_last_name: Required[str]
+    rep_first_name: Required[str]
+    rep_last_name_kana: Required[str]
+    rep_first_name_kana: Required[str]
     email: Required[str]
     phone: Required[str]
     subdomain: Required[str]
@@ -112,7 +139,9 @@ class BusinessAccountRegistrationData(TypedDict, total=False):
 
 
 class BusinessProfileSerializer(serializers.Serializer[BusinessProfileData]):
-    name = serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True)
+    # 注意: Stripe APIのbusiness_profileはname_kanaをサポートしていない
+    # name_kanaはcompanyオブジェクトにのみ存在する
+    name = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True)
     support_email = serializers.EmailField(required=False, allow_null=True, allow_blank=True)
     url = serializers.URLField(required=False, allow_null=True, allow_blank=True)
     product_description = serializers.CharField(required=False, allow_null=True, allow_blank=True)
@@ -136,6 +165,7 @@ class AddressKanjiSerializer(serializers.Serializer):
     postal_code = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=32)
     state = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=128)
     city = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=128)
+    town = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=255)
     line1 = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=255)
     line2 = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=255)
 
@@ -145,12 +175,45 @@ class AddressKanaSerializer(serializers.Serializer):
     postal_code = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=32)
     state = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=128)
     city = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=128)
+    town = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=255)
     line1 = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=255)
+    line2 = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=255)
+
+    # 番地（カナ）で許可する文字: カタカナ、数字（全角・半角）、スペース、ハイフン、中点(・)、の
+    _LINE1_KANA_PATTERN = re.compile(r"^[ァ-ヶー０-９0-9\s\-－−・の]+$")
+
+    def validate_line1(self, value):
+        if not value or not value.strip():
+            return value
+        v = value.strip()
+        if not self._LINE1_KANA_PATTERN.match(v):
+            raise serializers.ValidationError(
+                "カタカナ・数字で入力してください"
+            )
+        return v
 
 
 class CompanySerializer(serializers.Serializer[CompanyData]):
-    name = serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True)
+    name = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True)
+    name_kanji = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True)
+    name_kana = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True)
+    phone = serializers.CharField(max_length=32, required=False, allow_null=True, allow_blank=True)
+    tax_id = serializers.CharField(max_length=32, required=False, allow_null=True, allow_blank=True)
     address = AddressSerializer(required=False)
+    address_kanji = AddressKanjiSerializer(required=False)
+    address_kana = AddressKanaSerializer(required=False)
+    directors_provided = serializers.BooleanField(required=False, allow_null=True)
+
+    def validate(self, data):
+        name_kanji = data.get('name_kanji')
+        name_kana = data.get('name_kana')
+        has_kanji = name_kanji and isinstance(name_kanji, str) and name_kanji.strip()
+        has_kana = name_kana and isinstance(name_kana, str) and name_kana.strip()
+        if has_kanji and not has_kana:
+            raise serializers.ValidationError(
+                {'name_kana': '法人名または屋号を入力した場合、法人名または屋号（カナ）も入力してください。'}
+            )
+        return data
 
 
 class DateOfBirthSerializer(serializers.Serializer[DateOfBirthData]):
@@ -160,10 +223,10 @@ class DateOfBirthSerializer(serializers.Serializer[DateOfBirthData]):
 
 
 class IndividualSerializer(serializers.Serializer[IndividualData]):
-    first_name_kanji = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=255)
-    last_name_kanji = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=255)
-    first_name_kana = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=255)
-    last_name_kana = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=255)
+    last_name_kanji = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=50)
+    first_name_kanji = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=50)
+    last_name_kana = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=50)
+    first_name_kana = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=50)
     email = serializers.EmailField(required=False, allow_null=True, allow_blank=True)
     phone = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=32)
     dob = DateOfBirthSerializer(required=False)
@@ -184,12 +247,81 @@ class VerificationSerializer(serializers.Serializer[VerificationData]):
     document_back = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
 
+class SettingsPaymentsSerializer(serializers.Serializer[SettingsPaymentsData]):
+    statement_descriptor = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, max_length=22
+    )
+    statement_descriptor_kana = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, max_length=22
+    )
+    statement_descriptor_kanji = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, max_length=17
+    )
+
+    def validate_statement_descriptor(self, value):
+        if not value or not value.strip():
+            return value
+        v = value.strip()
+        if len(v) < 5 or len(v) > 22:
+            raise serializers.ValidationError(
+                "明細書表記（ローマ字/英字）は5〜22文字で入力してください"
+            )
+        if not re.match(r"^[A-Z0-9\-\.]+$", v):
+            raise serializers.ValidationError(
+                "大文字の半角英数字で入力してください（スペースは不可）。使用できる記号はハイフン・ドットのみです"
+            )
+        if not re.search(r"[A-Z]", v):
+            raise serializers.ValidationError("1文字以上は英字が必要です")
+        if re.search(r"[<>\\'\"]", v) or "*" in v:
+            raise serializers.ValidationError(
+                "文字 < > \\ ' \" * は使用できません"
+            )
+        return v
+
+    def validate_statement_descriptor_kana(self, value):
+        if not value or not value.strip():
+            return value
+        v = value.strip()
+        if len(v) > 22:
+            raise serializers.ValidationError(
+                "明細書表記（カナ）は22文字以内で入力してください"
+            )
+        if not re.match(r"^[ァ-ヶー\s\-\.]+$", v):
+            raise serializers.ValidationError(
+                "カタカナ・ハイフン・ドットのみ使用できます"
+            )
+        return v
+
+    def validate_statement_descriptor_kanji(self, value):
+        if not value or not value.strip():
+            return value
+        v = value.strip()
+        if len(v) > 17:
+            raise serializers.ValidationError(
+                "明細書表記は17文字以内で入力してください"
+            )
+        if re.search(r"[<>\\'\"]", v) or "*" in v or "＊" in v:
+            raise serializers.ValidationError(
+                "文字 << >> \\ ' \" * ＊ は使用できません"
+            )
+        if "<<" in v or ">>" in v:
+            raise serializers.ValidationError(
+                "文字 << >> \\ ' \" * ＊ は使用できません"
+            )
+        return v
+
+
+class SettingsSerializer(serializers.Serializer[SettingsData]):
+    payments = SettingsPaymentsSerializer(required=False)
+
+
 class CustomAccountUpdateSerializer(serializers.Serializer[CustomAccountUpdateData]):
     business_profile = BusinessProfileSerializer(required=False)
     company = CompanySerializer(required=False)
     individual = IndividualSerializer(required=False)
     external_account = ExternalAccountSerializer(required=False)
     verification = VerificationSerializer(required=False)
+    settings = SettingsSerializer(required=False)
 
     def validate(self, attrs: CustomAccountUpdateData) -> CustomAccountUpdateData:
         if not attrs:
@@ -214,8 +346,15 @@ class RegistrationTokenVerifySerializer(serializers.Serializer[RegistrationToken
 
 class BusinessAccountRegistrationSerializer(serializers.Serializer[BusinessAccountRegistrationData]):
     token = serializers.CharField(required=True)
+    business_type = serializers.ChoiceField(
+        choices=[('company', '法人'), ('individual', '個人事業主')],
+        required=True
+    )
     company_name = serializers.CharField(max_length=100, required=True)
-    rep_name = serializers.CharField(max_length=50, required=True)
+    rep_last_name = serializers.CharField(max_length=50, required=True)
+    rep_first_name = serializers.CharField(max_length=50, required=True)
+    rep_last_name_kana = serializers.CharField(max_length=50, required=True)
+    rep_first_name_kana = serializers.CharField(max_length=50, required=True)
     email = serializers.EmailField(required=True)
     phone = serializers.CharField(max_length=15, required=True)
     subdomain = serializers.CharField(min_length=3, max_length=12, required=True)
