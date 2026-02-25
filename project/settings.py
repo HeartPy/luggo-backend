@@ -42,6 +42,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "project.middleware.SlidingSessionMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -165,7 +166,7 @@ CSRF_COOKIE_SAMESITE = 'Lax'
 SESSION_COOKIE_SAMESITE = 'Lax'
 
 # セッションタイムアウト設定
-SESSION_COOKIE_AGE = 60 * 60  # 1時間（ログインセッション用）
+SESSION_COOKIE_AGE = 60 * 60  # 1時間（ログインセッション用・最終アクセスから）
 TEMPORARY_SESSION_COOKIE_AGE = 30 * 60  # 30分（一時セッション用：Stripe設定、予約フロー）
 SESSION_SAVE_EVERY_REQUEST = True
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
