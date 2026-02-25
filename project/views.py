@@ -1,13 +1,15 @@
+from datetime import datetime, timedelta
+import logging
+
+from django.conf import settings
+from django.contrib.sessions.models import Session
+from django.middleware.csrf import get_token
+from django.utils import timezone
+from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
 from rest_framework.request import Request
-from rest_framework import status
-from django.middleware.csrf import get_token
-from django.contrib.sessions.models import Session
-from django.utils import timezone
-from django.conf import settings
-import logging
+from rest_framework.response import Response
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +36,19 @@ def get_csrf_token(request: Request) -> Response:
 @permission_classes([AllowAny])
 def start_session(request: Request) -> Response:
     """セッションを開始"""
-    # セッションタイプを取得（デフォルトは一時セッション）
     session_type = request.data.get('session_type', 'temporary')
 
-    # セッションタイプに応じて有効期限を設定
+    # セッション自体の有効期限は常に SESSION_COOKIE_AGEで統一
+    # ログイン状態を一時セッションの期限切れで失わないようにするため
+    request.session.set_expiry(settings.SESSION_COOKIE_AGE)
+
     if session_type == 'temporary':
-        # 一時セッション（予約フロー、アカウント登録、Stripe設定等）：30分
-        request.session.set_expiry(settings.TEMPORARY_SESSION_COOKIE_AGE)
+        # 一時セッション（Stripe設定、予約フロー等）の有効期限をセッション内に別管理
+        temporary_expires_at = timezone.now() + timedelta(seconds=settings.TEMPORARY_SESSION_COOKIE_AGE)
+        request.session['temporary_session_expires_at'] = temporary_expires_at.isoformat()
     else:
-        # 通常のセッション（ログイン用）：1時間
-        request.session.set_expiry(settings.SESSION_COOKIE_AGE)
+        # 通常セッション開始時は一時セッション情報をクリア
+        request.session.pop('temporary_session_expires_at', None)
 
     request.session.save()
 
@@ -52,11 +57,16 @@ def start_session(request: Request) -> Response:
         try:
             session = Session.objects.get(session_key=session_key)
             expire_date = session.expire_date
-            return Response({
+
+            response_data: dict = {
                 "sessionStarted": True,
                 "expiresAt": expire_date.isoformat() if expire_date else None,
                 "sessionType": session_type,
-            }, status=status.HTTP_200_OK)
+            }
+            if session_type == 'temporary':
+                response_data["temporaryExpiresAt"] = request.session['temporary_session_expires_at']
+
+            return Response(response_data, status=status.HTTP_200_OK)
         except Session.DoesNotExist:
             pass
 
@@ -81,7 +91,7 @@ def check_session_validity(request: Request) -> Response:
         session = Session.objects.get(session_key=session_key)
         now = timezone.now()
 
-        # セッションの有効期限をチェック
+        # セッション自体（ログイン）の有効期限をチェック
         if session.expire_date and session.expire_date <= now:
             return Response({
                 "valid": False,
@@ -94,11 +104,31 @@ def check_session_validity(request: Request) -> Response:
         if session.expire_date:
             remaining_seconds = int((session.expire_date - now).total_seconds())
 
-        return Response({
+        response_data: dict = {
             "valid": True,
             "expiresAt": session.expire_date.isoformat() if session.expire_date else None,
             "remainingSeconds": remaining_seconds,
-        }, status=status.HTTP_200_OK)
+        }
+
+        # 一時セッション（Stripe設定等）の期限切れを別途チェック
+        temporary_expires_at_str = request.session.get('temporary_session_expires_at')
+        if temporary_expires_at_str:
+            temporary_expires_at = datetime.fromisoformat(temporary_expires_at_str)
+            if timezone.is_naive(temporary_expires_at):
+                temporary_expires_at = timezone.make_aware(temporary_expires_at)
+
+            if temporary_expires_at <= now:
+                response_data["temporarySessionExpired"] = True
+                response_data["temporarySessionMessage"] = "セッションの有効期限が切れています。お手数おかけしますが、最初から入力し直してください。"
+                request.session.pop('temporary_session_expires_at', None)
+                request.session.save()
+            else:
+                response_data["temporarySessionExpired"] = False
+                temporary_remaining = int((temporary_expires_at - now).total_seconds())
+                response_data["temporaryExpiresAt"] = temporary_expires_at_str
+                response_data["temporaryRemainingSeconds"] = temporary_remaining
+
+        return Response(response_data, status=status.HTTP_200_OK)
     except Session.DoesNotExist:
         return Response({
             "valid": False,
