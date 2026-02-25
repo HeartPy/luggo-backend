@@ -3,7 +3,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.request import Request
 from rest_framework import status
-from django.contrib.auth import authenticate, login, get_user_model
+from django.contrib.auth import authenticate, login, logout, get_user_model
 from django.conf import settings
 from django.utils import timezone
 import logging
@@ -221,6 +221,24 @@ def verify_login_code_api(request: Request) -> Response:
         logger.error(f"認証コード検証エラー: error={str(e)}", exc_info=True)
         return Response(
             {'error': '予期しないエラーが発生しました。しばらく時間をおいて再度お試しください。'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def logout_api(request: Request) -> Response:
+    """ログアウト処理"""
+    try:
+        logout(request)
+        return Response(
+            {'message': 'ログアウトしました。'},
+            status=status.HTTP_200_OK
+        )
+    except Exception as e:
+        logger.error(f"ログアウトエラー: error={str(e)}", exc_info=True)
+        return Response(
+            {'error': '予期しないエラーが発生しました。'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 

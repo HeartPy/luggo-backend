@@ -7,6 +7,7 @@ urlpatterns: list[URLPattern] = [
     path('auth/check', views.check_authentication, name='check_authentication'),
     path('auth/send-login-code', views.send_login_code, name='send_login_code'),
     path('auth/verify-login-code', views.verify_login_code_api, name='verify_login_code'),
+    path('auth/logout', views.logout_api, name='logout'),
 
     # パスワード再設定
     path('password/request-reset', views.request_password_reset, name='request_password_reset'),
