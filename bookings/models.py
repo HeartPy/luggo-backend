@@ -25,10 +25,10 @@ class LuggageBooking(models.Model):
         'business_owners.BusinessProfile',
         on_delete=models.CASCADE,
         related_name='bookings',
-        verbose_name='ビジネスオーナー',
+        verbose_name='事業者',
         null=True,
         blank=True,
-        help_text='この予約を担当するビジネスオーナー'
+        help_text='この予約を担当する事業者'
     )
     delivery_status = models.CharField(
         max_length=20,

@@ -11,6 +11,7 @@ import requests
 import stripe
 import logging
 import re
+
 from project.utils import mask_sensitive_id
 from business_owners.models import BusinessProfile
 from .models import LuggageBooking
@@ -20,30 +21,29 @@ stripe.api_key = settings.STRIPE_SECRET_KEY
 logger = logging.getLogger(__name__)
 
 
+# 都道府県名とコードのマッピング
+_PREF_MAP: dict[str, str] = {
+    '01': '北海道', '02': '青森県', '03': '岩手県', '04': '宮城県',
+    '05': '秋田県', '06': '山形県', '07': '福島県', '08': '茨城県',
+    '09': '栃木県', '10': '群馬県', '11': '埼玉県', '12': '千葉県',
+    '13': '東京都', '14': '神奈川県', '15': '新潟県', '16': '富山県',
+    '17': '石川県', '18': '福井県', '19': '山梨県', '20': '長野県',
+    '21': '岐阜県', '22': '静岡県', '23': '愛知県', '24': '三重県',
+    '25': '滋賀県', '26': '京都府', '27': '大阪府', '28': '兵庫県',
+    '29': '奈良県', '30': '和歌山県', '31': '鳥取県', '32': '島根県',
+    '33': '岡山県', '34': '広島県', '35': '山口県', '36': '徳島県',
+    '37': '香川県', '38': '愛媛県', '39': '高知県', '40': '福岡県',
+    '41': '佐賀県', '42': '長崎県', '43': '熊本県', '44': '大分県',
+    '45': '宮崎県', '46': '鹿児島県', '47': '沖縄県',
+}
+
 def extract_prefecture_code(address: str) -> Optional[str]:
     """住所文字列から都道府県コードを抽出"""
     if not address:
         return None
 
-    # 都道府県名とコードのマッピング
-    prefecture_map = {
-        '北海道': '01', '青森県': '02', '岩手県': '03', '宮城県': '04',
-        '秋田県': '05', '山形県': '06', '福島県': '07', '茨城県': '08',
-        '栃木県': '09', '群馬県': '10', '埼玉県': '11', '千葉県': '12',
-        '東京都': '13', '神奈川県': '14', '新潟県': '15', '富山県': '16',
-        '石川県': '17', '福井県': '18', '山梨県': '19', '長野県': '20',
-        '岐阜県': '21', '静岡県': '22', '愛知県': '23', '三重県': '24',
-        '滋賀県': '25', '京都府': '26', '大阪府': '27', '兵庫県': '28',
-        '奈良県': '29', '和歌山県': '30', '鳥取県': '31', '島根県': '32',
-        '岡山県': '33', '広島県': '34', '山口県': '35', '徳島県': '36',
-        '香川県': '37', '愛媛県': '38', '高知県': '39', '福岡県': '40',
-        '佐賀県': '41', '長崎県': '42', '熊本県': '43', '大分県': '44',
-        '宮崎県': '45', '鹿児島県': '46', '沖縄県': '47',
-    }
-
-    # 都道府県名を検索
-    for prefecture, code in prefecture_map.items():
-        if prefecture in address:
+    for code, prefecture_name in _PREF_MAP.items():
+        if prefecture_name in address:
             return code
 
     return None
@@ -52,71 +52,68 @@ def extract_prefecture_code(address: str) -> Optional[str]:
 @api_view(['GET'])
 @permission_classes([permissions.AllowAny])
 def luggage_items(request: Request) -> Response:
-    """ビジネスオーナーの料金設定に基づいて荷物情報を取得"""
+    """事業者の料金設定に基づいて荷物情報を取得"""
     try:
         # リクエストパラメータから取得
         business_owner_id = request.GET.get('business_owner')
         if not business_owner_id:
             return Response(
-                {'errMsg': 'ビジネスオーナーが指定されていません。'},
+                {'errMsg': '事業者が指定されていません。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         pickup_address = request.GET.get('pickup_location_address', '')
         delivery_address = request.GET.get('delivery_location_address', '')
 
-        # ビジネスオーナーを取得
+        # 事業者を取得
         try:
             business_owner = BusinessProfile.objects.get(id=business_owner_id)
         except BusinessProfile.DoesNotExist:
             return Response(
-                {'errMsg': '指定されたビジネスオーナーが見つかりません。'},
+                {'errMsg': '指定された事業者が見つかりません。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 都道府県コードを取得（集荷場所と配送場所の住所から）
-        pickup_prefecture_code = extract_prefecture_code(pickup_address)
+        # 都道府県コードを取得（配送場所の住所から）
         delivery_prefecture_code = extract_prefecture_code(delivery_address)
 
-        # 荷物の種類の定義（仮で固定）
-        LUGGAGE_ITEMS = [
+        # 荷物の種類の定義
+        LUGGAGE_TYPES = [
             {
                 'id': 1,
-                'name': 'ベビーカー',
-                'key': 'baby_stroller_count',
-                'image_src': 'baby-stroller.svg',
+                'name': '機内持ち込みサイズ（3辺計：〜120cm）',
+                'key': 'cabin',
+                'image_src': 'backpack.svg',
             },
             {
                 'id': 2,
-                'name': 'ダンボール',
-                'key': 'cardboard_count',
-                'image_src': 'cardboard.svg',
+                'name': '受託手荷物サイズ（3辺計：〜160cm）',
+                'key': 'checked',
+                'image_src': 'suitcase.svg',
             },
             {
                 'id': 3,
-                'name': 'スーツケースなど',
-                'key': 'suitcase_count',
-                'image_src': 'suitcase.svg',
+                'name': '規格外サイズ（3辺計：〜180cm）',
+                'key': 'oversize',
+                'image_src': 'guitar-case.svg',
             },
         ]
 
-        # ビジネスオーナーの料金設定から料金を取得
+        pricing_rules = business_owner.pricing_rules or {}
+
+        # 配達先都道府県の料金設定を取得
+        pref_prices = {}
+        if delivery_prefecture_code and delivery_prefecture_code in pricing_rules:
+            pref_prices = pricing_rules[delivery_prefecture_code]
+
+        # 配達可能な荷物タイプのみ返す（料金が設定されているもの）
         items = []
-        for item in LUGGAGE_ITEMS:
+        for item in LUGGAGE_TYPES:
             key = item['key']
+            price = pref_prices.get(key)
 
-            # 集荷場所と配送場所の料金を取得
-            pickup_price = business_owner.get_price(pickup_prefecture_code, key)
-            delivery_price = business_owner.get_price(delivery_prefecture_code, key)
-
-            # 高い方の料金を採用
-            price = max(pickup_price, delivery_price)
-
-            if price == 0:
-                return Response(
-                    {'errMsg': f'{item["name"]}の料金が設定されていません。'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            if price is None or price == 0:
+                continue
 
             items.append({
                 'id': item['id'],
@@ -138,65 +135,178 @@ def luggage_items(request: Request) -> Response:
         )
 
 
+# 都道府県ごとの概略バウンディングボックス (south, north, west, east) 単位：度
+_PREF_BBOX: dict[str, tuple[float, float, float, float]] = {
+    '01': (41.40, 45.55, 139.35, 145.82),  # 北海道
+    '02': (40.20, 41.60, 139.70, 141.70),  # 青森県
+    '03': (38.70, 40.50, 140.60, 142.10),  # 岩手県
+    '04': (37.70, 39.00, 140.25, 141.70),  # 宮城県
+    '05': (38.85, 40.55, 139.50, 141.05),  # 秋田県
+    '06': (37.70, 39.00, 139.40, 140.90),  # 山形県
+    '07': (36.75, 37.98, 139.05, 141.05),  # 福島県
+    '08': (35.70, 36.80, 139.70, 140.85),  # 茨城県
+    '09': (36.18, 37.22, 139.32, 140.35),  # 栃木県
+    '10': (36.05, 37.05, 138.40, 139.70),  # 群馬県
+    '11': (35.73, 36.30, 138.95, 139.92),  # 埼玉県
+    '12': (34.88, 35.94, 139.72, 140.88),  # 千葉県
+    '13': (35.50, 35.90, 138.94, 139.92),  # 東京都（本土）
+    '14': (35.12, 35.70, 138.90, 139.80),  # 神奈川県
+    '15': (36.75, 38.58, 137.62, 139.62),  # 新潟県
+    '16': (36.30, 36.90, 136.77, 137.78),  # 富山県
+    '17': (36.00, 37.90, 136.33, 137.38),  # 石川県
+    '18': (35.40, 36.35, 135.42, 136.58),  # 福井県
+    '19': (35.18, 35.95, 138.32, 139.25),  # 山梨県
+    '20': (35.15, 37.02, 137.37, 138.60),  # 長野県
+    '21': (35.15, 36.33, 136.25, 137.65),  # 岐阜県
+    '22': (34.57, 35.48, 137.47, 138.88),  # 静岡県
+    '23': (34.55, 35.37, 136.67, 137.82),  # 愛知県
+    '24': (33.58, 35.05, 135.83, 136.97),  # 三重県
+    '25': (34.80, 35.72, 135.75, 136.58),  # 滋賀県
+    '26': (34.70, 35.77, 135.05, 135.98),  # 京都府
+    '27': (34.25, 34.90, 135.08, 135.78),  # 大阪府
+    '28': (34.25, 35.70, 134.27, 135.50),  # 兵庫県
+    '29': (33.82, 34.75, 135.53, 136.12),  # 奈良県
+    '30': (33.42, 34.40, 135.00, 136.10),  # 和歌山県
+    '31': (35.00, 35.58, 133.28, 134.58),  # 鳥取県
+    '32': (34.28, 35.58, 131.65, 133.42),  # 島根県
+    '33': (34.30, 35.30, 133.20, 134.55),  # 岡山県
+    '34': (34.12, 35.05, 132.10, 133.45),  # 広島県
+    '35': (33.72, 34.73, 130.77, 132.33),  # 山口県
+    '36': (33.50, 34.28, 133.75, 134.82),  # 徳島県
+    '37': (34.00, 34.55, 133.42, 134.50),  # 香川県
+    '38': (32.87, 34.13, 132.00, 133.43),  # 愛媛県
+    '39': (32.68, 33.92, 132.42, 134.32),  # 高知県
+    '40': (33.00, 33.98, 130.00, 131.20),  # 福岡県
+    '41': (32.82, 33.60, 129.70, 130.68),  # 佐賀県
+    '42': (32.58, 33.52, 129.48, 130.22),  # 長崎県（本土）
+    '43': (31.98, 33.22, 130.05, 131.38),  # 熊本県
+    '44': (32.62, 33.68, 130.72, 132.02),  # 大分県
+    '45': (31.33, 32.87, 130.63, 131.98),  # 宮崎県
+    '46': (30.98, 32.25, 130.18, 131.32),  # 鹿児島県（本土）
+    '47': (25.70, 26.92, 127.65, 128.55),  # 沖縄県（本島）
+}
+
+
+def _calc_bounding_box(
+    codes: list[str],
+) -> tuple[float, float, float, float] | None:
+    """都道府県コードリストから各バウンディングボックスを合算"""
+    boxes = [_PREF_BBOX[code] for code in codes if code in _PREF_BBOX]
+    if not boxes:
+        return None
+
+    south = min(box[0] for box in boxes)
+    north = max(box[1] for box in boxes)
+    west = min(box[2] for box in boxes)
+    east = max(box[3] for box in boxes)
+
+    return south, north, west, east
+
+
 @api_view(['GET'])
 @permission_classes([permissions.AllowAny])
 def location_suggestions(request: Request) -> Response:
     """Google Places APIを使用した場所のサジェスト取得"""
     query = request.GET.get('q', '').strip()
+    prefectures_param = request.GET.get('prefectures', '').strip()
 
     if not query or len(query) < 2:
         return Response({'suggestions': []})
 
+    # 指定された都道府県コード・名称リストを構築
+    codes: list[str] = []
+    allowed_pref_names: list[str] = []
+    if prefectures_param:
+        codes = [chunk.strip() for chunk in prefectures_param.split(',') if chunk.strip()]
+        allowed_pref_names = [_PREF_MAP[code] for code in codes if code in _PREF_MAP]
+
     try:
-        url = 'https://maps.googleapis.com/maps/api/place/textsearch/json'
-        params = {
-            'query': query,
-            'key': settings.GOOGLE_PLACES_API_KEY,
-            'language': 'ja',
-            'region': 'jp',
-            'type': 'establishment',
+        # Places API — Text Search エンドポイント
+        url = 'https://places.googleapis.com/v1/places:searchText'
+
+        request_body: dict[str, Any] = {
+            'textQuery': query,
+            'languageCode': 'ja',
+            'regionCode': 'JP',
+            'maxResultCount': 20,
         }
 
-        response = requests.get(url, params=params, timeout=10)
+        # 都道府県バウンディングボックスで locationRestriction を設定
+        if codes:
+            bbox = _calc_bounding_box(codes)
+            if bbox:
+                south, north, west, east = bbox
+                request_body['locationRestriction'] = {
+                    'rectangle': {
+                        'low': {'latitude': south, 'longitude': west},
+                        'high': {'latitude': north, 'longitude': east},
+                    }
+                }
+
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': settings.GOOGLE_PLACES_API_KEY,
+            'X-Goog-FieldMask': (
+                'places.id,'
+                'places.displayName,'
+                'places.formattedAddress,'
+                'places.types,'
+                'places.primaryType,'
+                'places.rating,'
+                'places.userRatingCount,'
+                'places.location'
+            ),
+        }
+
+        response = requests.post(url, json=request_body, headers=headers, timeout=10)
         response.raise_for_status()
 
         data = response.json()
 
-        if data['status'] != 'OK':
-            return Response(
-                {'errMsg': f'Google Places API error: {data["status"]}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
+        # 宿泊施設・空港・鉄道駅のみ許可
         allowed_types = {
             'lodging',
+            'hotel',
             'airport',
             'train_station',
             'subway_station',
+            'transit_station',
         }
 
         suggestions = []
-        for place in data.get('results', []):
+        for place in data.get('places', []):
             place_types = set(place.get('types', []))
+            primary_type = place.get('primaryType', '')
 
-            if place_types.intersection(allowed_types):
-                suggestion = {
-                    'place_id': place.get('place_id'),
-                    'name': place.get('name', ''),
-                    'address': place.get('formatted_address', ''),
-                    'types': place.get('types', []),
-                    'rating': place.get('rating'),
-                    'user_ratings_total': place.get('user_ratings_total'),
-                    'geometry': {
-                        'lat': place.get('geometry', {}).get('location', {}).get('lat'),
-                        'lng': place.get('geometry', {}).get('location', {}).get('lng'),
-                    }
-                }
-                suggestions.append(suggestion)
+            if primary_type not in allowed_types and not place_types.intersection(allowed_types):
+                continue
 
-                 # 最大10件まで
-                if len(suggestions) >= 10:
-                    break
+            formatted_address = place.get('formattedAddress', '')
+
+            # 都道府県フィルタが指定されている場合、formattedAddress に都道府県名が含まれるか確認
+            if allowed_pref_names and not any(pname in formatted_address for pname in allowed_pref_names):
+                continue
+
+            name = place.get('displayName', {}).get('text', '')
+            location = place.get('location', {})
+
+            suggestion = {
+                'place_id': place.get('id', ''),
+                'name': name,
+                'address': formatted_address,
+                'types': place.get('types', []),
+                'rating': place.get('rating'),
+                'user_ratings_total': place.get('userRatingCount'),
+                'geometry': {
+                    'lat': location.get('latitude'),
+                    'lng': location.get('longitude'),
+                },
+            }
+            suggestions.append(suggestion)
+
+            # 最大10件まで
+            if len(suggestions) >= 10:
+                break
 
         return Response({'suggestions': suggestions})
 
@@ -315,12 +425,11 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
                     )
 
                 # 荷物情報の検証（最低1点以上の荷物が必要）
-                LUGGAGE_ITEM_KEYS = ['baby_stroller_count', 'cardboard_count', 'suitcase_count']
+                LUGGAGE_ITEM_KEYS = ['cabin', 'checked', 'oversize']
 
                 luggage_counts = {}
                 total_items = 0
                 for key in LUGGAGE_ITEM_KEYS:
-                    # luggage_itemsから取得、なければ個別のキーから取得
                     count = luggage_items.get(key, request.data.get(key, 0))
 
                     if isinstance(count, str):
@@ -554,12 +663,11 @@ def create_payment_intent(request: Request) -> Response:
             )
 
         # 荷物情報の検証（最低1点以上の荷物が必要）
-        LUGGAGE_ITEM_KEYS = ['baby_stroller_count', 'cardboard_count', 'suitcase_count']
+        LUGGAGE_ITEM_KEYS = ['cabin', 'checked', 'oversize']
 
         luggage_counts = {}
         total_items = 0
         for key in LUGGAGE_ITEM_KEYS:
-            # luggage_itemsから取得、なければ個別のキーから取得
             count = luggage_items.get(key, request.data.get(key, 0))
 
             if isinstance(count, str):
@@ -593,7 +701,26 @@ def create_payment_intent(request: Request) -> Response:
         customer_name = request.data.get('customer_name', '')
         customer_email = request.data.get('customer_email', '')
 
-        connected_account_id = "acct_1SVvis5SisbnvGqu"
+        # 予約フォームの事業者（サブドメインで特定）から Stripe Connect アカウントID を取得
+        business_owner_id = request.data.get('business_owner_id')
+        if not business_owner_id:
+            return Response(
+                {'errMsg': '事業者が指定されていません。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            business_profile = BusinessProfile.objects.get(id=business_owner_id)
+        except (BusinessProfile.DoesNotExist, ValueError):
+            return Response(
+                {'errMsg': '指定された事業者が見つかりません。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        connected_account_id = (business_profile.stripe_account_id or '').strip()
+        if not connected_account_id:
+            return Response(
+                {'errMsg': 'この事業者はまだ決済の設定が完了していません。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # Payment Intent作成パラメータを準備
         payment_intent_params = {

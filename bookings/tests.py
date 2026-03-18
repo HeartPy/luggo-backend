@@ -42,7 +42,7 @@ class BaseBookingTest:
         defaults = self._BOOKING_DEFAULTS.copy()
         defaults['pickup_date'] = date.today() + timedelta(days=1)
         defaults['delivery_date'] = date.today() + timedelta(days=1)
-        defaults['luggage_items'] = {'baby_stroller_count': 1, 'cardboard_count': 0, 'suitcase_count': 0}
+        defaults['luggage_items'] = {'cabin': 1, 'checked': 0, 'oversize': 0}
         defaults['total_amount'] = 2000
         defaults.update(kwargs)
         return LuggageBooking.objects.create(**defaults)
@@ -55,9 +55,9 @@ class BaseBookingTest:
         defaults['pickup_date'] = pickup_date.isoformat()
         defaults['delivery_date'] = delivery_date.isoformat()
         # 各荷物の数量フィールド（views.pyでluggage_itemsとtotal_amountに変換される）
-        defaults['baby_stroller_count'] = 1
-        defaults['cardboard_count'] = 0
-        defaults['suitcase_count'] = 0
+        defaults['cabin'] = 1
+        defaults['checked'] = 0
+        defaults['oversize'] = 0
         defaults.update(kwargs)
         return defaults
 
