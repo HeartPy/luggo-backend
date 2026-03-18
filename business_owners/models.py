@@ -50,7 +50,7 @@ def validate_subdomain(value: str) -> None:
 
 
 class BusinessProfileManager(models.Manager):
-    """有効なビジネスオーナーのみを取得するマネージャー"""
+    """有効な事業者のみを取得するマネージャー"""
     def get_queryset(self):
         return super().get_queryset().filter(is_active=True)
 

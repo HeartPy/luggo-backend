@@ -210,7 +210,7 @@ class HasStripeCustomAccount(BasePermission):
         if isinstance(user, AnonymousUser):
             return False
 
-        # ビジネスオーナープロフィールとStripeアカウントIDの存在確認
+        # 事業者プロフィールとStripeアカウントIDの存在確認
         if not hasattr(user, 'business_profile') or not user.business_profile.stripe_account_id:
             return False
 
@@ -1879,7 +1879,7 @@ def custom_account_requirements(request: Request) -> Response:
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_current_business_profile(request: Request) -> Response:
-    """現在ログイン中のビジネスオーナーのプロフィール情報を取得"""
+    """現在ログイン中の事業者のプロフィール情報を取得"""
     try:
         if not hasattr(request.user, 'business_profile'):
             return Response(
@@ -1919,8 +1919,82 @@ def get_current_business_profile(request: Request) -> Response:
 
     except Exception as e:
         logger.error(
-            f"ビジネスオーナープロフィール取得エラー: user_id={mask_sensitive_id(request.user.id)}, error={str(e)}",
+            f"事業者プロフィール取得エラー: user_id={mask_sensitive_id(request.user.id)}, error={str(e)}",
             exc_info=True
+        )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# 料金設定で許容する荷物タイプのキー（pricing_rules 正規化用）
+_PRICING_LUGGAGE_KEYS = ('cabin', 'checked', 'oversize')
+
+
+def _normalize_pricing_rules(rules: dict) -> dict:
+    """
+    リクエストの pricing_rules を正規化する。
+    - 1階層目: 都道府県コードを文字列に統一
+    - 2階層目: cabin / checked / oversize のみ採用し、料金を非負整数に変換
+    """
+    normalized: dict[str, dict[str, int]] = {}
+    for pref_code, pref_prices in rules.items():
+        if not isinstance(pref_prices, dict):
+            continue
+        cleaned: dict[str, int] = {}
+        for key in _PRICING_LUGGAGE_KEYS:
+            val = pref_prices.get(key)
+            if val is None:
+                continue
+            try:
+                price = int(float(val))
+                if price >= 0:
+                    cleaned[key] = price
+            except (TypeError, ValueError):
+                continue
+        if cleaned:
+            normalized[str(pref_code)] = cleaned
+    return normalized
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def update_profile_pricing(request: Request) -> Response:
+    """料金設定（出発地域・配達地域の料金）を更新する"""
+    try:
+        if not hasattr(request.user, 'business_profile'):
+            return Response(
+                {'error': '事業者情報が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        business_profile = request.user.business_profile
+        service_areas = request.data.get('service_areas')
+        pricing_rules = request.data.get('pricing_rules')
+
+        if service_areas is not None:
+            if not isinstance(service_areas, list):
+                return Response(
+                    {'error': 'service_areas は配列で指定してください。'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            business_profile.service_areas = [str(pref_code) for pref_code in service_areas]
+
+        if pricing_rules is not None:
+            if not isinstance(pricing_rules, dict):
+                return Response(
+                    {'error': 'pricing_rules はオブジェクトで指定してください。'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            business_profile.pricing_rules = _normalize_pricing_rules(pricing_rules)
+
+        business_profile.save()
+        return Response(status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(
+            "料金設定更新エラー: user_id=%s, error=%s",
+            mask_sensitive_id(request.user.id),
+            str(e),
+            exc_info=True,
         )
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1954,6 +2028,8 @@ def get_business_profile_by_subdomain(request: Request) -> Response:
             'company_name': business_profile.company_name,
             'subdomain': business_profile.subdomain,
             'is_active': business_profile.is_active,
+            'service_areas': business_profile.service_areas or [],
+            'pricing_rules': business_profile.pricing_rules or {},
         }, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(
