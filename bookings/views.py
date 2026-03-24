@@ -37,16 +37,64 @@ _PREF_MAP: dict[str, str] = {
     '45': '宮崎県', '46': '鹿児島県', '47': '沖縄県',
 }
 
-def extract_prefecture_code(address: str) -> Optional[str]:
-    """住所文字列から都道府県コードを抽出"""
-    if not address:
+# 郵便番号の先頭2桁から都道府県コードへのマッピング
+_POSTAL_PREFIX_TO_PREF: dict[str, str] = {
+    '00': '01', '04': '01', '05': '01', '06': '01', '07': '01',
+    '08': '01', '09': '01',
+    '03': '02', '02': '03', '98': '04', '01': '05', '99': '06',
+    '96': '07', '97': '07',
+    '30': '08', '31': '08',
+    '32': '09',
+    '37': '10',
+    '33': '11', '34': '11', '35': '11', '36': '11',
+    '26': '12', '27': '12', '28': '12', '29': '12',
+    '10': '13', '11': '13', '12': '13', '13': '13', '14': '13',
+    '15': '13', '16': '13', '17': '13', '18': '13', '19': '13',
+    '20': '13',
+    '21': '14', '22': '14', '23': '14', '24': '14', '25': '14',
+    '94': '15', '95': '15',
+    '93': '16',
+    '92': '17',
+    '91': '18',
+    '40': '19',
+    '38': '20', '39': '20',
+    '50': '21',
+    '41': '22', '42': '22', '43': '22',
+    '44': '23', '45': '23', '46': '23', '47': '23', '48': '23',
+    '49': '23',
+    '51': '24',
+    '52': '25',
+    '60': '26', '61': '26',
+    '53': '27', '54': '27', '55': '27', '56': '27', '57': '27',
+    '58': '27', '59': '27',
+    '65': '28', '66': '28', '67': '28', '62': '28',
+    '63': '29',
+    '64': '30',
+    '68': '31',
+    '69': '32',
+    '70': '33', '71': '33',
+    '72': '34', '73': '34',
+    '74': '35', '75': '35',
+    '77': '36',
+    '76': '37',
+    '79': '38',
+    '78': '39',
+    '80': '40', '81': '40', '82': '40', '83': '40',
+    '84': '41',
+    '85': '42',
+    '86': '43',
+    '87': '44',
+    '88': '45',
+    '89': '46',
+    '90': '47',
+}
+
+
+def pref_code_from_postal(postal_code: str) -> Optional[str]:
+    """郵便番号の先頭2桁から都道府県コードを返す"""
+    if not postal_code or len(postal_code) < 2:
         return None
-
-    for code, prefecture_name in _PREF_MAP.items():
-        if prefecture_name in address:
-            return code
-
-    return None
+    return _POSTAL_PREFIX_TO_PREF.get(postal_code[:2])
 
 
 @api_view(['GET'])
@@ -62,8 +110,7 @@ def luggage_items(request: Request) -> Response:
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        pickup_address = request.GET.get('pickup_location_address', '')
-        delivery_address = request.GET.get('delivery_location_address', '')
+        delivery_postal_code = request.GET.get('delivery_postal_code', '')
 
         # 事業者を取得
         try:
@@ -74,8 +121,8 @@ def luggage_items(request: Request) -> Response:
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 都道府県コードを取得（配送場所の住所から）
-        delivery_prefecture_code = extract_prefecture_code(delivery_address)
+        # 都道府県コードを取得（配送先郵便番号から）
+        delivery_prefecture_code = pref_code_from_postal(delivery_postal_code)
 
         # 荷物の種類の定義
         LUGGAGE_TYPES = [
@@ -719,6 +766,38 @@ def create_payment_intent(request: Request) -> Response:
         if not connected_account_id:
             return Response(
                 {'errMsg': 'この事業者はまだ決済の設定が完了していません。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 集荷・配達地域バリデーション
+        service_areas = business_profile.service_areas or []
+        if not service_areas:
+            return Response(
+                {'errMsg': '集荷地域が設定されていないため予約できません。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        pickup_postal_code = request.data.get('pickup_postal_code', '')
+        pickup_pref = pref_code_from_postal(pickup_postal_code)
+        if not pickup_pref or pickup_pref not in service_areas:
+            return Response(
+                {'errMsg': '集荷場所の郵便番号は集荷地域の対象外です。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        pricing_rules = business_profile.pricing_rules or {}
+        deliverable_prefectures = list(pricing_rules.keys())
+        if not deliverable_prefectures:
+            return Response(
+                {'errMsg': '配達地域が設定されていないため予約できません。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        delivery_postal_code = request.data.get('delivery_postal_code', '')
+        delivery_pref = pref_code_from_postal(delivery_postal_code)
+        if not delivery_pref or delivery_pref not in deliverable_prefectures:
+            return Response(
+                {'errMsg': '配送場所の郵便番号は配達地域の対象外です。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 

@@ -521,9 +521,9 @@ def custom_create_account(request: Request) -> Response:
                         # 文字列以外、空文字列、空白のみの文字列を除外
                         if not isinstance(value, str):
                             continue
-                        value = value.strip()
-                        if value == '':
-                            continue
+                            value = value.strip()
+                            if value == '':
+                                continue
                         cleaned_business_profile[key] = value
 
                     if cleaned_business_profile:
@@ -599,7 +599,11 @@ def custom_create_account(request: Request) -> Response:
                             if not cleaned_address_kanji.get('country'):
                                 cleaned_address_kanji['country'] = 'JP'
 
-                            other_fields = {key: value for key, value in cleaned_address_kanji.items() if key != 'country'}
+                            other_fields = {
+                                key: value
+                                for key, value in cleaned_address_kanji.items()
+                                if key != 'country'
+                            }
 
                             if other_fields:
                                 cleaned_company['address_kanji'] = cleaned_address_kanji
@@ -620,7 +624,11 @@ def custom_create_account(request: Request) -> Response:
                             if not cleaned_address_kana.get('country'):
                                 cleaned_address_kana['country'] = 'JP'
 
-                            other_fields = {key: value for key, value in cleaned_address_kana.items() if key != 'country'}
+                            other_fields = {
+                                key: value
+                                for key, value in cleaned_address_kana.items()
+                                if key != 'country'
+                            }
 
                             if other_fields:
                                 cleaned_company['address_kana'] = cleaned_address_kana
@@ -1227,9 +1235,9 @@ def custom_update_account(request: Request) -> Response:
                 # 文字列以外、空文字列、空白のみの文字列を除外
                 if not isinstance(value, str):
                     continue
-                value = value.strip()
-                if value == '':
-                    continue
+                    value = value.strip()
+                    if value == '':
+                        continue
                 cleaned_business_profile[key] = value
 
             if cleaned_business_profile:
@@ -1314,7 +1322,11 @@ def custom_update_account(request: Request) -> Response:
                     if not cleaned_address_kanji.get('country'):
                         cleaned_address_kanji['country'] = 'JP'
 
-                    other_fields = {key: value for key, value in cleaned_address_kanji.items() if key != 'country'}
+                    other_fields = {
+                        key: value
+                        for key, value in cleaned_address_kanji.items()
+                        if key != 'country'
+                    }
 
                     if other_fields:
                         cleaned_company['address_kanji'] = cleaned_address_kanji
@@ -1335,14 +1347,20 @@ def custom_update_account(request: Request) -> Response:
                     if not cleaned_address_kana.get('country'):
                         cleaned_address_kana['country'] = 'JP'
 
-                    other_fields = {key: value for key, value in cleaned_address_kana.items() if key != 'country'}
+                    other_fields = {
+                        key: value
+                        for key, value in cleaned_address_kana.items()
+                        if key != 'country'
+                    }
 
                     if other_fields:
                         cleaned_company['address_kana'] = cleaned_address_kana
 
                 if cleaned_company:
                     existing_company = _stripe_object_to_dict(getattr(account, 'company', None))
-                    update_params['company'] = _company_for_update({**existing_company, **cleaned_company})
+                    update_params['company'] = _company_for_update(
+                        {**existing_company, **cleaned_company}
+                    )
 
         # External Account (Bank Account)のマージ
         external_account = payload.get('external_account') or {}
@@ -1455,7 +1473,11 @@ def custom_update_account(request: Request) -> Response:
                     if not cleaned_address_kanji.get('country'):
                         cleaned_address_kanji['country'] = 'JP'
 
-                    other_fields = {key: value for key, value in cleaned_address_kanji.items() if key != 'country'}
+                    other_fields = {
+                        key: value
+                        for key, value in cleaned_address_kanji.items()
+                        if key != 'country'
+                    }
 
                     if other_fields:
                         cleaned_individual['address_kanji'] = cleaned_address_kanji
@@ -1476,7 +1498,11 @@ def custom_update_account(request: Request) -> Response:
                     if not cleaned_address_kana.get('country'):
                         cleaned_address_kana['country'] = 'JP'
 
-                    other_fields = {key: value for key, value in cleaned_address_kana.items() if key != 'country'}
+                    other_fields = {
+                        key: value
+                        for key, value in cleaned_address_kana.items()
+                        if key != 'country'
+                    }
 
                     if other_fields:
                         cleaned_individual['address_kana'] = cleaned_address_kana
@@ -1502,7 +1528,9 @@ def custom_update_account(request: Request) -> Response:
 
                 if cleaned_individual:
                     existing_individual = _stripe_object_to_dict(getattr(account, 'individual', None))
-                    update_params['individual'] = _individual_for_update({**existing_individual, **cleaned_individual})
+                    update_params['individual'] = _individual_for_update(
+                        {**existing_individual, **cleaned_individual}
+                    )
 
         elif account_business_type == 'company':
             # business_typeが'company'の場合、individualパラメータは使用できない
@@ -1929,11 +1957,14 @@ def get_current_business_profile(request: Request) -> Response:
 _PRICING_LUGGAGE_KEYS = ('cabin', 'checked', 'oversize')
 
 
+_MIN_PRICE = 100
+
+
 def _normalize_pricing_rules(rules: dict) -> dict:
     """
     リクエストの pricing_rules を正規化する。
     - 1階層目: 都道府県コードを文字列に統一
-    - 2階層目: cabin / checked / oversize のみ採用し、料金を非負整数に変換
+    - 2階層目: cabin / checked / oversize のみ採用し、料金を _MIN_PRICE 以上の整数に変換
     """
     normalized: dict[str, dict[str, int]] = {}
     for pref_code, pref_prices in rules.items():
@@ -1946,7 +1977,7 @@ def _normalize_pricing_rules(rules: dict) -> dict:
                 continue
             try:
                 price = int(float(val))
-                if price >= 0:
+                if price >= _MIN_PRICE:
                     cleaned[key] = price
             except (TypeError, ValueError):
                 continue
@@ -1986,6 +2017,8 @@ def update_profile_pricing(request: Request) -> Response:
                 )
             business_profile.pricing_rules = _normalize_pricing_rules(pricing_rules)
 
+        business_profile.pricing_draft = None
+        business_profile.pricing_draft_saved_at = None
         business_profile.save()
         return Response(status=status.HTTP_200_OK)
 
@@ -1993,6 +2026,59 @@ def update_profile_pricing(request: Request) -> Response:
         logger.error(
             "料金設定更新エラー: user_id=%s, error=%s",
             mask_sensitive_id(request.user.id),
+            str(e),
+            exc_info=True,
+        )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def pricing_draft(request: Request) -> Response:
+    """料金設定ドラフト（一時保存）の取得・保存・削除"""
+    try:
+        if not hasattr(request.user, 'business_profile'):
+            return Response(
+                {'error': '事業者情報が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        business_profile = request.user.business_profile
+
+        if request.method == 'GET':
+            if business_profile.pricing_draft is None:
+                return Response(
+                    {'draft': None},
+                    status=status.HTTP_200_OK,
+                )
+            return Response(
+                {'draft': business_profile.pricing_draft},
+                status=status.HTTP_200_OK,
+            )
+
+        if request.method == 'PUT':
+            draft_data = request.data.get('draft')
+            if draft_data is None or not isinstance(draft_data, dict):
+                return Response(
+                    {'error': 'draft はオブジェクトで指定してください。'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            business_profile.pricing_draft = draft_data
+            business_profile.pricing_draft_saved_at = timezone.now()
+            business_profile.save(update_fields=['pricing_draft', 'pricing_draft_saved_at'])
+            return Response(status=status.HTTP_200_OK)
+
+        # DELETE
+        business_profile.pricing_draft = None
+        business_profile.pricing_draft_saved_at = None
+        business_profile.save(update_fields=['pricing_draft', 'pricing_draft_saved_at'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    except Exception as e:
+        logger.error(
+            "料金設定ドラフトエラー: user_id=%s, method=%s, error=%s",
+            mask_sensitive_id(request.user.id),
+            request.method,
             str(e),
             exc_info=True,
         )

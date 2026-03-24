@@ -91,6 +91,19 @@ class BusinessProfile(models.Model):
         verbose_name='料金設定',
     )
 
+    # 料金設定の一時保存
+    pricing_draft = models.JSONField(
+        default=None,
+        null=True,
+        blank=True,
+        verbose_name='料金設定の一時保存',
+    )
+    pricing_draft_saved_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='料金設定の一時保存日時',
+    )
+
     # 実績
     total_orders_completed = models.PositiveIntegerField(default=0, verbose_name='総注文数')
     total_revenue = models.DecimalField(max_digits=12, decimal_places=2, default=0, verbose_name='総売上')
