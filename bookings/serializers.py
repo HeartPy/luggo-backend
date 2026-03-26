@@ -1,7 +1,23 @@
 from typing import Any, Dict
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from rest_framework import serializers
 from .models import LuggageBooking
+
+_JST = ZoneInfo("Asia/Tokyo")
+_MAX_BOOKING_DAYS = 180
+
+
+def _min_pickup_date() -> date:
+    """前日23時締切: 23時JST未満→翌日、23時以降→翌々日"""
+    now = datetime.now(_JST)
+    days_ahead = 1 if now.hour < 23 else 2
+    return (now + timedelta(days=days_ahead)).date()
+
+
+def _max_booking_date() -> date:
+    now = datetime.now(_JST)
+    return (now + timedelta(days=_MAX_BOOKING_DAYS)).date()
 
 
 class LuggageBookingSerializer(serializers.ModelSerializer[LuggageBooking]):
@@ -41,19 +57,20 @@ class LuggageBookingSerializer(serializers.ModelSerializer[LuggageBooking]):
         return obj.days_until_pickup()
 
     def validate_pickup_date(self, value: date) -> date:
-        """集荷日のバリデーション"""
-        if value < date.today():
-            raise serializers.ValidationError('集荷日は今日以降の日付を指定してください。')
+        if value < _min_pickup_date():
+            raise serializers.ValidationError('前日の23時を過ぎているため、この日付は指定できません。')
+        if value > _max_booking_date():
+            raise serializers.ValidationError('予約できるのは半年先までです。')
         return value
 
     def validate_delivery_date(self, value: date) -> date:
-        """配送日のバリデーション"""
-        if value < date.today():
-            raise serializers.ValidationError('配送日は今日以降の日付を指定してください。')
+        if value < _min_pickup_date():
+            raise serializers.ValidationError('前日の23時を過ぎているため、この日付は指定できません。')
+        if value > _max_booking_date():
+            raise serializers.ValidationError('予約できるのは半年先までです。')
         return value
 
     def validate(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """全体的なバリデーション"""
         pickup_date = data.get('pickup_date')
         delivery_date = data.get('delivery_date')
 
@@ -94,19 +111,20 @@ class LuggageBookingCreateSerializer(serializers.ModelSerializer[LuggageBooking]
         ]
 
     def validate_pickup_date(self, value: date) -> date:
-        """集荷日のバリデーション"""
-        if value < date.today():
-            raise serializers.ValidationError('集荷日は今日以降の日付を指定してください。')
+        if value < _min_pickup_date():
+            raise serializers.ValidationError('前日の23時を過ぎているため、この日付は指定できません。')
+        if value > _max_booking_date():
+            raise serializers.ValidationError('予約できるのは半年先までです。')
         return value
 
     def validate_delivery_date(self, value: date) -> date:
-        """配送日のバリデーション"""
-        if value < date.today():
-            raise serializers.ValidationError('配送日は今日以降の日付を指定してください。')
+        if value < _min_pickup_date():
+            raise serializers.ValidationError('前日の23時を過ぎているため、この日付は指定できません。')
+        if value > _max_booking_date():
+            raise serializers.ValidationError('予約できるのは半年先までです。')
         return value
 
     def validate(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """全体的なバリデーション"""
         pickup_date = data.get('pickup_date')
         delivery_date = data.get('delivery_date')
 
