@@ -9,11 +9,22 @@ RUN apt-get update \
         postgresql-client \
         build-essential \
         libpq-dev \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# uvをインストール
+COPY --from=ghcr.io/astral-sh/uv:0.11.14 /uv /uvx /bin/
+
+# コンテナは単一アプリ前提のためシステムPythonのsite-packagesにインストールする
+ENV UV_SYSTEM_PYTHON=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
 
 # Pythonの依存関係をインストール（本番環境用）
 COPY requirements/ /code/requirements/
-RUN pip install --no-cache-dir -r requirements/production.txt
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install -r requirements/production.txt
 
 # 本番ステージ
 FROM python:3.11-slim AS production
@@ -25,6 +36,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         postgresql-client \
         libpq-dev \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # 非rootユーザーを作成
