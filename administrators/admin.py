@@ -28,10 +28,10 @@ class BusinessProfileAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # djang
     ]
     readonly_fields = [
         'service_areas',
-        'max_luggage_capacity',
         'operating_hours_start',
         'operating_hours_end',
         'operating_days',
+        'daily_max_luggage',
         'pricing_rules',
         'total_orders_completed',
         'total_revenue',
@@ -63,10 +63,15 @@ class BusinessProfileAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # djang
             'fields': ('company_name', 'company_email', 'tax_id')
         }),
         ('サービス情報', {
-            'fields': ('service_areas', 'max_luggage_capacity'),
+            'fields': ('service_areas',),
         }),
         ('営業情報', {
-            'fields': ('operating_hours_start', 'operating_hours_end', 'operating_days'),
+            'fields': (
+                'operating_hours_start',
+                'operating_hours_end',
+                'operating_days',
+                'daily_max_luggage',
+            ),
         }),
         ('料金設定', {
             'fields': ('pricing_rules',),

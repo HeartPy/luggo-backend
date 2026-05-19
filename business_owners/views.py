@@ -17,6 +17,7 @@ import time
 import re
 import io
 import logging
+from datetime import date as date_type
 from project.utils import mask_sensitive_id
 
 from .models import BusinessProfile, RegistrationToken
@@ -1929,7 +1930,7 @@ def get_current_business_profile(request: Request) -> Response:
             'rep_last_name_kana': business_profile.rep_last_name_kana,
             'rep_first_name_kana': business_profile.rep_first_name_kana,
             'service_areas': business_profile.service_areas,
-            'max_luggage_capacity': business_profile.max_luggage_capacity,
+            'daily_max_luggage': business_profile.daily_max_luggage,
             'operating_hours_start': business_profile.operating_hours_start.isoformat(),
             'operating_hours_end': business_profile.operating_hours_end.isoformat(),
             'operating_days': business_profile.operating_days,
@@ -2340,5 +2341,179 @@ def register_business_account(request: Request) -> Response:
         logger.error(
             f"事業者アカウント登録エラー: error={str(e)}",
             exc_info=True
+        )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def business_settings(request: Request) -> Response:
+    """事業の設定（定休日・臨時休業日）の取得・更新"""
+    try:
+        if not hasattr(request.user, 'business_profile'):
+            return Response(
+                {'error': '事業者情報が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        business_profile = request.user.business_profile
+
+        if request.method == 'GET':
+            return Response({
+                'operating_days': business_profile.operating_days,
+                'nth_weekday_holidays': business_profile.nth_weekday_holidays or [],
+                'daily_max_luggage': business_profile.daily_max_luggage,
+                'temporary_closures': business_profile.temporary_closures or [],
+            }, status=status.HTTP_200_OK)
+
+        # PUT
+        operating_days = request.data.get('operating_days')
+        nth_weekday_holidays = request.data.get('nth_weekday_holidays')
+        daily_max_luggage = request.data.get('daily_max_luggage')
+        temporary_closures = request.data.get('temporary_closures')
+
+        if operating_days is not None:
+            if not isinstance(operating_days, str) or len(operating_days) != 7:
+                return Response(
+                    {'error': 'operating_days は7文字の文字列で指定してください。'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if not all(char in ('0', '1') for char in operating_days):
+                return Response(
+                    {'error': 'operating_days は 0 と 1 のみで構成してください。'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            business_profile.operating_days = operating_days
+
+        if nth_weekday_holidays is not None:
+            if not isinstance(nth_weekday_holidays, list):
+                return Response(
+                    {'error': 'nth_weekday_holidays は配列で指定してください。'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            valid_pattern = re.compile(r'^[1-4]-[0-6]$')
+            validated_nwh: list[str] = []
+            for entry in nth_weekday_holidays:
+                if not isinstance(entry, str) or not valid_pattern.match(entry):
+                    return Response(
+                        {'error': f'無効な第N週曜日形式です: {entry}（例: "1-0" = 第1月曜）'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                validated_nwh.append(entry)
+            business_profile.nth_weekday_holidays = sorted(set(validated_nwh))
+
+        if daily_max_luggage is not None:
+            try:
+                daily_max_luggage = int(daily_max_luggage)
+            except (ValueError, TypeError):
+                return Response(
+                    {'error': '1日の最大荷物個数は整数で指定してください。'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if daily_max_luggage < -1:
+                return Response(
+                    {'error': '1日の最大荷物個数は-1以上で指定してください。'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            business_profile.daily_max_luggage = daily_max_luggage
+
+        if temporary_closures is not None:
+            if not isinstance(temporary_closures, list):
+                return Response(
+                    {'error': 'temporary_closures は配列で指定してください。'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            validated_dates: list[str] = []
+            for date in temporary_closures:
+                if not isinstance(date, str):
+                    return Response(
+                        {'error': '臨時休業日は YYYY-MM-DD 形式の文字列で指定してください。'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                try:
+                    date_type.fromisoformat(date)
+                except ValueError:
+                    return Response(
+                        {'error': f'無効な日付形式です: {date}'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                validated_dates.append(date)
+            business_profile.temporary_closures = sorted(set(validated_dates))
+
+        update_fields = [
+            'operating_days', 'nth_weekday_holidays',
+            'daily_max_luggage', 'temporary_closures',
+        ]
+        business_profile.settings_draft = None
+        business_profile.settings_draft_saved_at = None
+        update_fields += ['settings_draft', 'settings_draft_saved_at']
+        business_profile.save(update_fields=update_fields)
+
+        return Response({
+            'operating_days': business_profile.operating_days,
+            'nth_weekday_holidays': business_profile.nth_weekday_holidays or [],
+            'daily_max_luggage': business_profile.daily_max_luggage,
+            'temporary_closures': business_profile.temporary_closures or [],
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(
+            "事業設定更新エラー: user_id=%s, error=%s",
+            mask_sensitive_id(request.user.id),
+            str(e),
+            exc_info=True,
+        )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def business_settings_draft(request: Request) -> Response:
+    """事業設定ドラフト（一時保存）の取得・保存・削除"""
+    try:
+        if not hasattr(request.user, 'business_profile'):
+            return Response(
+                {'error': '事業者情報が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        business_profile = request.user.business_profile
+
+        if request.method == 'GET':
+            if business_profile.settings_draft is None:
+                return Response(
+                    {'draft': None},
+                    status=status.HTTP_200_OK,
+                )
+            return Response(
+                {'draft': business_profile.settings_draft},
+                status=status.HTTP_200_OK,
+            )
+
+        if request.method == 'PUT':
+            draft_data = request.data.get('draft')
+            if draft_data is None or not isinstance(draft_data, dict):
+                return Response(
+                    {'error': 'draft はオブジェクトで指定してください。'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            business_profile.settings_draft = draft_data
+            business_profile.settings_draft_saved_at = timezone.now()
+            business_profile.save(update_fields=['settings_draft', 'settings_draft_saved_at'])
+            return Response(status=status.HTTP_200_OK)
+
+        # DELETE
+        business_profile.settings_draft = None
+        business_profile.settings_draft_saved_at = None
+        business_profile.save(update_fields=['settings_draft', 'settings_draft_saved_at'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    except Exception as e:
+        logger.error(
+            "事業設定ドラフトエラー: user_id=%s, method=%s, error=%s",
+            mask_sensitive_id(request.user.id),
+            request.method,
+            str(e),
+            exc_info=True,
         )
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)

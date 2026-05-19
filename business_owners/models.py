@@ -77,18 +77,53 @@ class BusinessProfile(models.Model):
 
     # サービス情報
     service_areas = models.JSONField(default=list, blank=True, verbose_name='事業所在地')
-    max_luggage_capacity = models.PositiveIntegerField(default=20, verbose_name='最大荷物個数')
 
     # 営業情報
     operating_hours_start = models.TimeField(default='09:00', verbose_name='営業開始時間')
     operating_hours_end = models.TimeField(default='17:00', verbose_name='営業終了時間')
     operating_days = models.CharField(max_length=7, default='1111111', verbose_name='営業日')
 
+    # 第N週曜日の定休日（例: ["1-0","3-4"] → 第1月曜・第3金曜）
+    nth_weekday_holidays = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name='第N週曜日定休日',
+        help_text='["週番号-曜日番号", ...] 週:1-4, 曜日:0=月〜6=日'
+    )
+
+    # 1日の最大荷物個数（-1=制限なし, 0=予約不可, 1以上=上限値）
+    daily_max_luggage = models.IntegerField(
+        default=0,
+        verbose_name='1日の最大荷物個数',
+        help_text='-1の場合は制限なし。0の場合は予約不可。1以上で上限値。'
+    )
+
+    # 臨時休業日
+    temporary_closures = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name='臨時休業日',
+        help_text='ISO形式の日付文字列リスト例: ["2026-04-10", "2026-05-03"]'
+    )
+
     # 料金設定
     pricing_rules = models.JSONField(
         default=dict,
         blank=True,
         verbose_name='料金設定',
+    )
+
+    # 事業設定の一時保存
+    settings_draft = models.JSONField(
+        default=None,
+        null=True,
+        blank=True,
+        verbose_name='事業設定の一時保存',
+    )
+    settings_draft_saved_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='事業設定の一時保存日時',
     )
 
     # 料金設定の一時保存
