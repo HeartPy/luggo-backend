@@ -2,11 +2,12 @@ from rest_framework import generics, status, permissions
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.request import Request
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.db import transaction
 from django.conf import settings
 from typing import Any, Optional
 from uuid import UUID
+from datetime import date as date_type
 import requests
 import stripe
 import logging
@@ -95,6 +96,79 @@ def pref_code_from_postal(postal_code: str) -> Optional[str]:
     if not postal_code or len(postal_code) < 2:
         return None
     return _POSTAL_PREFIX_TO_PREF.get(postal_code[:2])
+
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def daily_remaining(request: Request) -> Response:
+    """指定日の荷物残り受付可能数を返す"""
+    try:
+        business_owner_id = request.GET.get('business_owner')
+        target_date_str = request.GET.get('date')
+
+        if not business_owner_id or not target_date_str:
+            return Response(
+                {'errMsg': 'business_owner と date は必須です。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            business_profile = BusinessProfile.objects.get(id=business_owner_id)
+        except (BusinessProfile.DoesNotExist, ValueError):
+            return Response(
+                {'errMsg': '事業者が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            target_date = date_type.fromisoformat(target_date_str)
+        except (ValueError, TypeError):
+            return Response(
+                {'errMsg': '日付の形式が正しくありません。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        daily_max = business_profile.daily_max_luggage
+        if daily_max < 0:
+            return Response(
+                {
+                    'daily_max': -1,
+                    'existing_total': 0,
+                    'remaining': -1,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        existing_bookings = LuggageBooking.objects.filter(
+            Q(pickup_date=target_date) | Q(delivery_date=target_date),
+            business_owner=business_profile,
+        ).exclude(delivery_status='cancelled')
+
+        existing_total = 0
+        for booking in existing_bookings:
+            items = booking.luggage_items or {}
+            existing_total += sum(
+                int(value)
+                for value in items.values()
+                if isinstance(value, (int, float, str)) and str(value).isdigit()
+            )
+
+        remaining = max(0, daily_max - existing_total)
+        return Response(
+            {
+                'daily_max': daily_max,
+                'existing_total': existing_total,
+                'remaining': remaining,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    except Exception as e:
+        logger.error("daily_remaining error: %s", str(e), exc_info=True)
+        return Response(
+            {'errMsg': str(e)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
 
 @api_view(['GET'])
@@ -800,6 +874,83 @@ def create_payment_intent(request: Request) -> Response:
                 {'errMsg': '配送場所の郵便番号は配達地域の対象外です。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        # 定休日・臨時休業日バリデーション
+        operating_days = business_profile.operating_days or '1111111'
+        nth_weekday_holidays = business_profile.nth_weekday_holidays or []
+        temporary_closures = business_profile.temporary_closures or []
+
+        for field_name, label in [('pickup_date', '集荷日'), ('delivery_date', '配送日')]:
+            raw_date = request.data.get(field_name, '')
+            if not raw_date:
+                continue
+
+            try:
+                target_date = date_type.fromisoformat(str(raw_date))
+            except (ValueError, TypeError):
+                continue
+
+            weekday_idx = target_date.weekday()
+            if len(operating_days) == 7 and operating_days[weekday_idx] == '0':
+                return Response(
+                    {'errMsg': f'{label}に指定された日は定休日のため選択できません。'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            nth = (target_date.day - 1) // 7 + 1
+            nth_key = f'{nth}-{weekday_idx}'
+            if nth_key in nth_weekday_holidays:
+                return Response(
+                    {'errMsg': f'{label}に指定された日は定休日のため選択できません。'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if target_date.isoformat() in temporary_closures:
+                return Response(
+                    {'errMsg': f'{label}に指定された日は臨時休業日のため選択できません。'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # 1日の最大荷物個数チェック（-1 = 制限なし）
+        daily_max = business_profile.daily_max_luggage
+        if daily_max >= 0:
+            pickup_date_raw = request.data.get('pickup_date', '')
+            delivery_date_raw = request.data.get('delivery_date', '')
+
+            for raw_dt, label in [(pickup_date_raw, '集荷日'), (delivery_date_raw, '配送日')]:
+                if not raw_dt:
+                    continue
+
+                try:
+                    target_date = date_type.fromisoformat(str(raw_dt))
+                except (ValueError, TypeError):
+                    continue
+
+                existing_bookings = LuggageBooking.objects.filter(
+                    Q(pickup_date=target_date) | Q(delivery_date=target_date),
+                    business_owner=business_profile,
+                ).exclude(delivery_status='cancelled')
+
+                existing_total = 0
+                for booking in existing_bookings:
+                    items = booking.luggage_items or {}
+                    existing_total += sum(
+                        int(value)
+                        for value in items.values()
+                        if isinstance(value, (int, float, str)) and str(value).isdigit()
+                    )
+
+                if existing_total + total_items > daily_max:
+                    remaining = max(0, daily_max - existing_total)
+                    return Response(
+                        {
+                            'errMsg': (
+                                f'{label}の荷物受付可能数の残りは{remaining}個です。'
+                                f'予約個数を{remaining}個以下にしてください。'
+                            ),
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
         # Payment Intent作成パラメータを準備
         payment_intent_params = {
