@@ -4,6 +4,7 @@ from . import views
 app_name = 'bookings'
 
 urlpatterns: list[URLPattern] = [
+    path('daily-remaining', views.daily_remaining, name='daily-remaining'),
     path('luggage-items', views.luggage_items, name='luggage-items'),
     path('location-suggestions', views.location_suggestions, name='location-suggestions'),
     path('create-payment-intent', views.create_payment_intent, name='create-payment-intent'),
