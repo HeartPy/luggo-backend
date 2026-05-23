@@ -255,7 +255,14 @@ def custom_get_account(request: Request) -> Response:
 
         account_id = request.user.business_profile.stripe_account_id
         account = stripe.Account.retrieve(account_id)
-        return Response({'account_id': account.id, 'account': account})
+
+        response_data: Dict[str, Any] = {'account_id': account.id, 'account': account}
+
+        if account.business_type == 'company':
+            persons = stripe.Account.list_persons(account_id, limit=100)
+            response_data['persons'] = [person for person in persons.data]
+
+        return Response(response_data)
 
     except stripe.error.StripeError as e:  # type: ignore[attr-defined]
         logger.error(
