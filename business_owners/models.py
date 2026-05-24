@@ -106,6 +106,80 @@ class BusinessProfile(models.Model):
         help_text='ISO形式の日付文字列リスト例: ["2026-04-10", "2026-05-03"]'
     )
 
+    # ===== 事業者の予約サイト（旅行者向けページ）に関する同意・確認状態 =====
+    # 対象:
+    #   - /booking/transaction-law（特定商取引法に基づく表記）
+    #   - /booking/privacy（プライバシーポリシー）
+    # 旅行者への公開可否（初回同意）と、公開後の変更・テンプレート改訂の
+    # 確認状態をここで管理する。
+
+    # 旅行者への公開について事業者が初回同意した日時。
+    # 同意済みでないと決済（Stripe）の設定に進めない。
+    public_info_consent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='公開情報表示同意日時',
+        help_text='特定商取引法に基づく表記とプライバシーポリシーをユーザーに表示することへ同意した日時'
+    )
+
+    # ページのテンプレート（プラットフォーム側で管理する静的文言）について
+    # 事業者が最後に確認したバージョン。policy_versions.py の現行値と
+    # 一致しない場合、ログイン後に変更内容の確認ポップアップが表示される
+    # （ソフトブロック: 未確認でも閲覧・操作は継続可能）。
+    booking_transaction_law_acknowledged_version = models.CharField(
+        max_length=10,
+        null=True,
+        blank=True,
+        verbose_name='確認済み予約サイト特商法テンプレートバージョン',
+        help_text='ISO 8601 形式の日付（YYYY-MM-DD）。null の場合は未確認。'
+    )
+    booking_transaction_law_acknowledged_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='予約サイト特商法テンプレート確認日時'
+    )
+    booking_privacy_acknowledged_version = models.CharField(
+        max_length=10,
+        null=True,
+        blank=True,
+        verbose_name='確認済み予約サイトプライバシーポリシーテンプレートバージョン',
+        help_text='ISO 8601 形式の日付（YYYY-MM-DD）。null の場合は未確認。'
+    )
+    booking_privacy_acknowledged_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='予約サイトプライバシーポリシーテンプレート確認日時'
+    )
+
+    # ===== LugGo プラットフォーム本体の利用規約・プライバシーポリシーへの同意状態 =====
+    # 規約が改訂された場合、agreed_version が現行バージョン
+    # （policy_versions.py の値）と一致しないため、ログイン後に再同意の
+    # ポップアップが表示される。
+    terms_agreed_version = models.CharField(
+        max_length=10,
+        null=True,
+        blank=True,
+        verbose_name='同意済み利用規約バージョン',
+        help_text='ISO 8601 形式の日付（YYYY-MM-DD）。null の場合は未同意。'
+    )
+    terms_agreed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='利用規約同意日時'
+    )
+    privacy_agreed_version = models.CharField(
+        max_length=10,
+        null=True,
+        blank=True,
+        verbose_name='同意済みプライバシーポリシーバージョン',
+        help_text='ISO 8601 形式の日付（YYYY-MM-DD）。null の場合は未同意。'
+    )
+    privacy_agreed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='プライバシーポリシー同意日時'
+    )
+
     # 料金設定
     pricing_rules = models.JSONField(
         default=dict,
