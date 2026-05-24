@@ -21,6 +21,12 @@ from datetime import date as date_type
 from project.utils import mask_sensitive_id
 
 from .models import BusinessProfile, RegistrationToken
+from .policy_versions import (
+    TERMS_VERSION,
+    PRIVACY_VERSION,
+    BOOKING_TRANSACTION_LAW_VERSION,
+    BOOKING_PRIVACY_VERSION,
+)
 from .serializers import (
     CustomAccountUpdateSerializer,
     BusinessAccountRegistrationSerializer,
@@ -299,6 +305,20 @@ def custom_create_account(request: Request) -> Response:
             return Response(
                 {'error': '既にStripeアカウントが作成されています。'},
                 status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ユーザー（旅行者）への公開情報表示について事業者の同意が未取得の場合は拒否
+        # （初回オンボーディング時のみ判定: 既に Stripe アカウントを持つケースは
+        #  上で弾かれるためここに来ない）
+        if business_profile.public_info_consent_at is None:
+            return Response(
+                {
+                    'error': (
+                        'ユーザーへの公開情報の表示について事業者の同意が記録されていません。'
+                        '事業者ダッシュボードで同意のうえ、再度お試しください。'
+                    ),
+                },
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         # business_typeを取得（デフォルトは'individual'）
@@ -1930,6 +1950,7 @@ def get_current_business_profile(request: Request) -> Response:
             'business_type': business_profile.business_type,
             'company_name': business_profile.company_name,
             'company_email': business_profile.company_email,
+            'phone_number': request.user.phone_number or '',
             'subdomain': business_profile.subdomain,
             'tax_id': business_profile.tax_id,
             'rep_last_name_kanji': business_profile.rep_last_name_kanji,
@@ -1942,6 +1963,10 @@ def get_current_business_profile(request: Request) -> Response:
             'operating_hours_end': business_profile.operating_hours_end.isoformat(),
             'operating_days': business_profile.operating_days,
             'pricing_rules': business_profile.pricing_rules,
+            'public_info_consent_at': (
+                business_profile.public_info_consent_at.isoformat()
+                if business_profile.public_info_consent_at else None
+            ),
             'total_orders_completed': business_profile.total_orders_completed,
             'total_revenue': str(business_profile.total_revenue),
             'is_approved': business_profile.is_approved,
@@ -1951,11 +1976,244 @@ def get_current_business_profile(request: Request) -> Response:
             'created_at': business_profile.created_at.isoformat(),
             'updated_at': business_profile.updated_at.isoformat(),
             'has_stripe_account': bool(business_profile.stripe_account_id),
+            'policy': {
+                'terms_current_version': TERMS_VERSION,
+                'privacy_current_version': PRIVACY_VERSION,
+                'terms_agreed_version': business_profile.terms_agreed_version,
+                'privacy_agreed_version': business_profile.privacy_agreed_version,
+                'terms_agreed_at': (
+                    business_profile.terms_agreed_at.isoformat()
+                    if business_profile.terms_agreed_at else None
+                ),
+                'privacy_agreed_at': (
+                    business_profile.privacy_agreed_at.isoformat()
+                    if business_profile.privacy_agreed_at else None
+                ),
+            },
+            'booking_template': {
+                'transaction_law_current_version': BOOKING_TRANSACTION_LAW_VERSION,
+                'privacy_current_version': BOOKING_PRIVACY_VERSION,
+                'transaction_law_acknowledged_version': (
+                    business_profile.booking_transaction_law_acknowledged_version
+                ),
+                'privacy_acknowledged_version': (
+                    business_profile.booking_privacy_acknowledged_version
+                ),
+                'transaction_law_acknowledged_at': (
+                    business_profile.booking_transaction_law_acknowledged_at.isoformat()
+                    if business_profile.booking_transaction_law_acknowledged_at else None
+                ),
+                'privacy_acknowledged_at': (
+                    business_profile.booking_privacy_acknowledged_at.isoformat()
+                    if business_profile.booking_privacy_acknowledged_at else None
+                ),
+            },
         }, status=status.HTTP_200_OK)
 
     except Exception as e:
         logger.error(
             f"事業者プロフィール取得エラー: user_id={mask_sensitive_id(request.user.id)}, error={str(e)}",
+            exc_info=True
+        )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def record_public_info_consent(request: Request) -> Response:
+    """
+    事業者が「特定商取引法に基づく表記」「プライバシーポリシー」を
+    ユーザー（旅行者）に表示することへ初回同意した日時を記録する。
+
+    初回同意済み（public_info_consent_at が設定済み）の場合は冪等に何もしない。
+    """
+    try:
+        if not hasattr(request.user, 'business_profile'):
+            return Response(
+                {'error': '事業者情報が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        business_profile = request.user.business_profile
+
+        if business_profile.public_info_consent_at is None:
+            business_profile.public_info_consent_at = timezone.now()
+            business_profile.save(update_fields=['public_info_consent_at', 'updated_at'])
+
+        return Response({
+            'public_info_consent_at': (
+                business_profile.public_info_consent_at.isoformat()
+                if business_profile.public_info_consent_at else None
+            ),
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(
+            f"公開情報同意記録エラー: user_id={mask_sensitive_id(request.user.id)}, error={str(e)}",
+            exc_info=True
+        )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def record_policy_agreement(request: Request) -> Response:
+    """
+    プラットフォーム利用規約・プライバシーポリシーの確認を記録する。
+    """
+    try:
+        if not hasattr(request.user, 'business_profile'):
+            return Response(
+                {'error': '事業者情報が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        business_profile = request.user.business_profile
+        requested_terms = request.data.get('terms_version')
+        requested_privacy = request.data.get('privacy_version')
+
+        # 少なくとも一方が指定されていることを要求
+        if not requested_terms and not requested_privacy:
+            return Response(
+                {'error': 'terms_version または privacy_version を指定してください。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        update_fields: list[str] = []
+        now = timezone.now()
+
+        # 利用規約の確認記録
+        if requested_terms is not None:
+            if requested_terms != TERMS_VERSION:
+                return Response(
+                    {'error': '指定された利用規約のバージョンが現行版と一致しません。'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if business_profile.terms_agreed_version != TERMS_VERSION:
+                business_profile.terms_agreed_version = TERMS_VERSION
+                business_profile.terms_agreed_at = now
+                update_fields += ['terms_agreed_version', 'terms_agreed_at']
+
+        # プライバシーポリシーの確認記録
+        if requested_privacy is not None:
+            if requested_privacy != PRIVACY_VERSION:
+                return Response(
+                    {'error': '指定されたプライバシーポリシーのバージョンが現行版と一致しません。'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if business_profile.privacy_agreed_version != PRIVACY_VERSION:
+                business_profile.privacy_agreed_version = PRIVACY_VERSION
+                business_profile.privacy_agreed_at = now
+                update_fields += ['privacy_agreed_version', 'privacy_agreed_at']
+
+        if update_fields:
+            update_fields.append('updated_at')
+            business_profile.save(update_fields=update_fields)
+
+        return Response({
+            'terms_current_version': TERMS_VERSION,
+            'privacy_current_version': PRIVACY_VERSION,
+            'terms_agreed_version': business_profile.terms_agreed_version,
+            'privacy_agreed_version': business_profile.privacy_agreed_version,
+            'terms_agreed_at': (
+                business_profile.terms_agreed_at.isoformat()
+                if business_profile.terms_agreed_at else None
+            ),
+            'privacy_agreed_at': (
+                business_profile.privacy_agreed_at.isoformat()
+                if business_profile.privacy_agreed_at else None
+            ),
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(
+            f"利用規約同意記録エラー: user_id={mask_sensitive_id(request.user.id)}, error={str(e)}",
+            exc_info=True
+        )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def record_booking_template_acknowledge(request: Request) -> Response:
+    """
+    予約サイトのテンプレート（プラットフォーム側で管理する静的部分）の
+    変更内容を事業者が確認したことを記録する。
+    """
+    try:
+        if not hasattr(request.user, 'business_profile'):
+            return Response(
+                {'error': '事業者情報が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        business_profile = request.user.business_profile
+        requested_tx = request.data.get('transaction_law_version')
+        requested_privacy = request.data.get('privacy_version')
+
+        if not requested_tx and not requested_privacy:
+            return Response(
+                {'error': 'transaction_law_version または privacy_version を指定してください。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        update_fields: list[str] = []
+        now = timezone.now()
+
+        if requested_tx is not None:
+            if requested_tx != BOOKING_TRANSACTION_LAW_VERSION:
+                return Response(
+                    {'error': '指定された特商法テンプレートのバージョンが現行版と一致しません。'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if business_profile.booking_transaction_law_acknowledged_version != BOOKING_TRANSACTION_LAW_VERSION:
+                business_profile.booking_transaction_law_acknowledged_version = BOOKING_TRANSACTION_LAW_VERSION
+                business_profile.booking_transaction_law_acknowledged_at = now
+                update_fields += [
+                    'booking_transaction_law_acknowledged_version',
+                    'booking_transaction_law_acknowledged_at',
+                ]
+
+        if requested_privacy is not None:
+            if requested_privacy != BOOKING_PRIVACY_VERSION:
+                return Response(
+                    {'error': '指定されたプライバシーポリシーテンプレートのバージョンが現行版と一致しません。'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if business_profile.booking_privacy_acknowledged_version != BOOKING_PRIVACY_VERSION:
+                business_profile.booking_privacy_acknowledged_version = BOOKING_PRIVACY_VERSION
+                business_profile.booking_privacy_acknowledged_at = now
+                update_fields += [
+                    'booking_privacy_acknowledged_version',
+                    'booking_privacy_acknowledged_at',
+                ]
+
+        if update_fields:
+            update_fields.append('updated_at')
+            business_profile.save(update_fields=update_fields)
+
+        return Response({
+            'transaction_law_current_version': BOOKING_TRANSACTION_LAW_VERSION,
+            'privacy_current_version': BOOKING_PRIVACY_VERSION,
+            'transaction_law_acknowledged_version': (
+                business_profile.booking_transaction_law_acknowledged_version
+            ),
+            'privacy_acknowledged_version': (
+                business_profile.booking_privacy_acknowledged_version
+            ),
+            'transaction_law_acknowledged_at': (
+                business_profile.booking_transaction_law_acknowledged_at.isoformat()
+                if business_profile.booking_transaction_law_acknowledged_at else None
+            ),
+            'privacy_acknowledged_at': (
+                business_profile.booking_privacy_acknowledged_at.isoformat()
+                if business_profile.booking_privacy_acknowledged_at else None
+            ),
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(
+            f"予約サイトテンプレート確認記録エラー: user_id={mask_sensitive_id(request.user.id)}, error={str(e)}",
             exc_info=True
         )
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -2117,6 +2375,18 @@ def get_business_profile_by_subdomain(request: Request) -> Response:
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        support_email = ''
+        account_id = (business_profile.stripe_account_id or '').strip()
+        if account_id:
+            try:
+                account = stripe.Account.retrieve(account_id)
+                bp_data = account.get('business_profile') or {}
+                support_email = bp_data.get('support_email') or ''
+            except stripe.error.StripeError as stripe_err:  # type: ignore[attr-defined]
+                logger.warning(
+                    f"subdomain/profile: Stripe アカウント取得エラー: {stripe_err}"
+                )
+
         return Response({
             'id': str(business_profile.id),
             'company_name': business_profile.company_name,
@@ -2124,12 +2394,139 @@ def get_business_profile_by_subdomain(request: Request) -> Response:
             'is_active': business_profile.is_active,
             'service_areas': business_profile.service_areas or [],
             'pricing_rules': business_profile.pricing_rules or {},
+            'operating_days': business_profile.operating_days,
+            'nth_weekday_holidays': business_profile.nth_weekday_holidays or [],
+            'daily_max_luggage': business_profile.daily_max_luggage,
+            'temporary_closures': business_profile.temporary_closures or [],
+            'support_email': support_email,
         }, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(
             f"予約フォームのURL取得エラー: error={str(e)}",
             exc_info=True
         )
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_transaction_law_by_subdomain(request: Request) -> Response:
+    """
+    サブドメインから特定商取引法に基づく表記に必要なデータを返す
+
+    事業者が「ユーザー（旅行者）への公開情報の表示」について未同意の場合、
+    ページが一般公開された状態にならないよう 404 を返す。
+    ただし、事業者本人が認証済みで自分のサブドメインを参照している場合は
+    プレビュー目的でアクセスを許可する（同意ポップアップからの確認用）。
+    """
+    try:
+        subdomain = request.query_params.get('subdomain', '').strip().lower()
+        if not subdomain:
+            return Response(
+                {'error': 'サブドメインが指定されていません。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            business_profile = BusinessProfile.objects.get(subdomain=subdomain, is_active=True)
+        except BusinessProfile.DoesNotExist:
+            return Response(
+                {'error': '指定された事業者が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # 未同意 & 事業者本人ではないリクエストは「存在しない」扱いで返す
+        if business_profile.public_info_consent_at is None:
+            is_owner_preview = (
+                getattr(request.user, 'is_authenticated', False)
+                and hasattr(request.user, 'business_profile')
+                and request.user.business_profile.subdomain == subdomain
+            )
+            if not is_owner_preview:
+                return Response(
+                    {'error': '指定された事業者が見つかりません。'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        result: Dict[str, Any] = {
+            'company_name': business_profile.company_name,
+            'representative_name': '',
+            'address': '',
+            'support_email': '',
+            'pricing_rules': business_profile.pricing_rules or {},
+            'operating_days': business_profile.operating_days or '1111111',
+            'nth_weekday_holidays': business_profile.nth_weekday_holidays or [],
+            'temporary_closures': business_profile.temporary_closures or [],
+        }
+
+        # Stripe アカウント情報を取得
+        account_id = business_profile.stripe_account_id
+        if account_id:
+            try:
+                account = stripe.Account.retrieve(account_id)
+
+                # サポートメールアドレス
+                bp = account.get('business_profile') or {}
+                result['support_email'] = bp.get('support_email') or ''
+
+                # 事業者所在地（address_kanji を優先）
+                bt = account.get('business_type', '')
+                if bt == 'company':
+                    addr = (account.get('company') or {}).get('address_kanji') or {}
+                else:
+                    addr = (account.get('individual') or {}).get('address_kanji') or {}
+
+                parts = [
+                    addr.get('state', ''),
+                    addr.get('city', ''),
+                    addr.get('town', ''),
+                    addr.get('line1', ''),
+                    addr.get('line2', ''),
+                ]
+                address_body = ''.join(part for part in parts if part)
+
+                postal_raw = addr.get('postal_code', '')
+                # 全角数字を半角に変換
+                postal_half = postal_raw.translate(
+                    str.maketrans('０１２３４５６７８９－', '0123456789-')
+                ) if postal_raw else ''
+                digits = ''.join(char for char in postal_half if char.isdigit())
+                if len(digits) == 7:
+                    postal_formatted = f'〒{digits[:3]}-{digits[3:]}'
+                elif postal_half:
+                    postal_formatted = f'〒{postal_half}'
+                else:
+                    postal_formatted = ''
+
+                if postal_formatted and address_body:
+                    result['address'] = f'{postal_formatted}<br />{address_body}'
+                elif address_body:
+                    result['address'] = address_body
+                elif postal_formatted:
+                    result['address'] = postal_formatted
+
+                # 代表者名（法人: Persons API、個人: individual）
+                if bt == 'company':
+                    persons = stripe.Account.list_persons(account_id, limit=100)
+                    for person in persons.data:
+                        if person.relationship and person.relationship.get('representative'):
+                            last = person.get('last_name_kanji') or ''
+                            first = person.get('first_name_kanji') or ''
+                            result['representative_name'] = f'{last} {first}'.strip()
+                            break
+                else:
+                    individual = account.get('individual') or {}
+                    last = individual.get('last_name_kanji') or ''
+                    first = individual.get('first_name_kanji') or ''
+                    result['representative_name'] = f'{last} {first}'.strip()
+
+            except stripe.error.StripeError as stripe_err:  # type: ignore[attr-defined]
+                logger.warning(f"特商法表示: Stripeアカウント取得エラー: {str(stripe_err)}")
+
+        return Response(result, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"特商法表示データ取得エラー: error={str(e)}", exc_info=True)
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -2295,6 +2692,7 @@ def register_business_account(request: Request) -> Response:
         )
 
         # BusinessProfile作成
+        now = timezone.now()
         BusinessProfile.objects.create(
             user=user,
             business_type=data['business_type'],
@@ -2305,7 +2703,20 @@ def register_business_account(request: Request) -> Response:
             rep_first_name_kanji=data['rep_first_name'],
             rep_last_name_kana=data['rep_last_name_kana'],
             rep_first_name_kana=data['rep_first_name_kana'],
-            stripe_account_id='',  # Stripeアカウントは後で管理画面から作成
+            # Stripeアカウントは後で管理画面から作成
+            stripe_account_id='',
+            # 登録フォームで利用規約・プライバシーポリシーへの同意を取っているため、
+            # 現行バージョンへの同意を初期値として記録
+            terms_agreed_version=TERMS_VERSION,
+            terms_agreed_at=now,
+            privacy_agreed_version=PRIVACY_VERSION,
+            privacy_agreed_at=now,
+            # 予約サイトテンプレートの確認状態を登録時点の現行版に固定
+            # （登録時点では未確認だが、ログイン後に改訂前の不要な更新確認ポップアップを出さないため）
+            booking_transaction_law_acknowledged_version=BOOKING_TRANSACTION_LAW_VERSION,
+            booking_transaction_law_acknowledged_at=now,
+            booking_privacy_acknowledged_version=BOOKING_PRIVACY_VERSION,
+            booking_privacy_acknowledged_at=now,
         )
 
         # トークンを使用済みとしてマーク

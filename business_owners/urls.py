@@ -9,6 +9,9 @@ urlpatterns: list[URLPattern] = [
     path('profile/pricing/draft', views.pricing_draft, name='pricing_draft'),
     path('profile/settings', views.business_settings, name='business_settings'),
     path('profile/settings/draft', views.business_settings_draft, name='business_settings_draft'),
+    path('profile/public-info-consent', views.record_public_info_consent, name='record_public_info_consent'),
+    path('profile/policy-agreement', views.record_policy_agreement, name='record_policy_agreement'),
+    path('profile/booking-template-acknowledge', views.record_booking_template_acknowledge, name='record_booking_template_acknowledge'),
     path('stripe/custom/account', views.custom_get_account, name='stripe_custom_get_account'),
     path('stripe/custom/create-account', views.custom_create_account, name='stripe_custom_create_account'),
     path('stripe/custom/update-account', views.custom_update_account, name='stripe_custom_update_account'),
@@ -23,4 +26,5 @@ urlpatterns: list[URLPattern] = [
 
     # サブドメイン関連
     path('subdomain/profile', views.get_business_profile_by_subdomain, name='get_business_profile_by_subdomain'),
+    path('subdomain/transaction-law', views.get_transaction_law_by_subdomain, name='get_transaction_law_by_subdomain'),
 ]
