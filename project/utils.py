@@ -1,7 +1,4 @@
-from typing import Union
-
-
-def mask_sensitive_id(value: Union[str, bytes, None]) -> str:
+def mask_sensitive_id(value: str | bytes | None) -> str:
     """機密情報（IDなど）をマスクしてログ出力用の文字列を返す"""
     if value is None:
         return "None"

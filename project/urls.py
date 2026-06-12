@@ -2,9 +2,9 @@ from django.contrib import admin
 from django.urls import path, include, URLPattern, URLResolver
 from django.conf import settings
 from django.conf.urls.static import static
-from typing import Union
 
-urlpatterns: list[Union[URLPattern, URLResolver]] = [
+
+urlpatterns: list[URLPattern | URLResolver] = [
     path("admin/", admin.site.urls),
     path("api/common/", include('project.urls_common')),
     path("api/users/", include('users.urls')),
