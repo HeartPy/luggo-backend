@@ -1,14 +1,14 @@
 from django.utils import timezone
-from django.core.mail import send_mail
 from django.conf import settings
 from typing import Optional
 import secrets
 import logging
 
+from project.email import send_email
 from .models import RegistrationToken
 
-logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
 
 def generate_registration_token(email: str) -> RegistrationToken:
     """登録用トークンを生成"""
@@ -53,19 +53,7 @@ def send_registration_email(email: str, token: str) -> bool:
 LugGo（ラグゴー）
 """
 
-    try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-            fail_silently=False,
-        )
-        logger.info(f"登録メール送信成功: email={email}")
-        return True
-    except Exception as e:
-        logger.error(f"登録メール送信失敗: email={email}, error={str(e)}", exc_info=True)
-        return False
+    return send_email(subject=subject, text=message, to=email)
 
 
 def verify_registration_token(token: str) -> Optional[RegistrationToken]:
