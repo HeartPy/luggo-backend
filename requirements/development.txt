@@ -6,3 +6,5 @@ whitenoise==6.6.*
 django-debug-toolbar==4.2.*
 django-extensions==3.2.*
 ipython==8.18.*
+pylint==3.*
+pylint-django==2.*

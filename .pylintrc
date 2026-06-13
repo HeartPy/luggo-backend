@@ -1,0 +1,31 @@
+[MAIN]
+load-plugins=pylint_django
+django-settings-module=project.settings
+ignore=migrations,.venv,venv,env,node_modules
+ignore-paths=^.*/migrations/.*$
+
+# 並列実行（0 で CPU 数に応じて自動）
+jobs=0
+
+[MESSAGES CONTROL]
+# Django プロジェクトでノイズになりやすいチェックを無効化
+disable=
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    too-few-public-methods,
+    duplicate-code
+
+[FORMAT]
+max-line-length=100
+
+[BASIC]
+# Django/DRF で慣習的に使う短い変数名を許可
+good-names=i,j,k,e,pk,qs,db,_
+
+[DESIGN]
+max-args=8
+max-attributes=12
+
+[REPORTS]
+output-format=colorized
