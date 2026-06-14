@@ -1,23 +1,25 @@
 from rest_framework import generics, status, permissions
 from rest_framework.response import Response
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.request import Request
 from django.db.models import Q, QuerySet
 from django.db import transaction
 from django.conf import settings
+from django.views.decorators.csrf import csrf_exempt
 from typing import Any, Optional
 from uuid import UUID
-from datetime import date as date_type
+from datetime import date as date_type, datetime as dt_datetime, timezone as dt_timezone
 import requests
 import stripe
 import logging
 import re
+import time
 
 from project.utils import mask_sensitive_id
 from business_owners.models import BusinessProfile
 from .models import LuggageBooking
 from .serializers import LuggageBookingSerializer, LuggageBookingCreateSerializer
-from .emails import send_booking_confirmation_email
+from .emails import send_booking_confirmation_email, send_unmatched_payment_alert
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 logger = logging.getLogger(__name__)
@@ -1124,3 +1126,140 @@ def create_payment_intent(request: Request) -> Response:
             {'errMsg': '支払い情報の取得に失敗しました。'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+def _booking_exists_with_grace(payment_intent_id: str, grace_seconds: int) -> bool:
+    """
+    指定の payment_intent_id に対応する予約が存在するかを確認する。
+
+    フロントの予約作成POST（confirm.vue は最大3回・指数バックオフで再送）が完了する前に
+    Webhook が到達するレースがあるため、即時チェックで見つからない場合は猶予時間内で
+    数回ポーリングし、誤った「予約なし」判定を避ける。
+    """
+    if LuggageBooking.objects.filter(payment_intent_id=payment_intent_id).exists():
+        return True
+
+    if grace_seconds <= 0:
+        return False
+
+    poll_interval = 1.0
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        if LuggageBooking.objects.filter(payment_intent_id=payment_intent_id).exists():
+            return True
+    return False
+
+
+def _notify_unmatched_payment(payment_intent: Any) -> bool:
+    """決済成功済みだが予約レコードが無い場合に運営へ通知する。送信成功で True。"""
+    payment_intent_id = payment_intent.get('id', '') or ''
+    amount = payment_intent.get('amount')
+    receipt_email = payment_intent.get('receipt_email')
+
+    metadata = payment_intent.get('metadata') or {}
+    customer_name = metadata.get('customer_name') if hasattr(metadata, 'get') else None
+
+    created_iso: Optional[str] = None
+    created_ts = payment_intent.get('created')
+    if created_ts:
+        try:
+            created_iso = (
+                dt_datetime.fromtimestamp(int(created_ts), tz=dt_timezone.utc)
+                .astimezone()
+                .isoformat()
+            )
+        except (ValueError, TypeError, OSError):
+            created_iso = None
+
+    # 事業者を transfer_data.destination（Stripe Connect アカウントID）から逆引きする
+    business_name: Optional[str] = None
+    transfer_data = payment_intent.get('transfer_data') or {}
+    destination = (
+        transfer_data.get('destination') if hasattr(transfer_data, 'get') else None
+    )
+    if destination:
+        try:
+            business_profile = BusinessProfile.objects.get(stripe_account_id=destination)
+            business_name = business_profile.company_name
+        except BusinessProfile.DoesNotExist:
+            business_name = None
+
+    logger.error(
+        "未照合の成功決済を検知（対応する予約レコードなし）: payment_intent_id=%s, amount=%s",
+        mask_sensitive_id(payment_intent_id),
+        amount,
+    )
+
+    return send_unmatched_payment_alert(
+        payment_intent_id=payment_intent_id,
+        amount=amount,
+        customer_name=customer_name,
+        customer_email=receipt_email,
+        business_name=business_name,
+        created_iso=created_iso,
+    )
+
+
+@csrf_exempt
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def stripe_webhook(request: Request) -> Response:
+    """
+    Stripe Webhook 受信エンドポイント
+
+    payment_intent.succeeded を受け取り、対応する予約レコードが存在しない場合に
+    運営へメール通知する（決済は成功しているが予約保存に失敗、もしくは決済直後に
+    ユーザーが離脱したケースの検知）。
+
+    PaymentIntent はプラットフォームアカウント上で destination charge として作成して
+    いるため、本 Webhook はプラットフォームアカウントに対して設定する（連結アカウント
+    側ではない）。
+    """
+    webhook_secret = settings.STRIPE_WEBHOOK_SECRET
+    if not webhook_secret:
+        logger.error("STRIPE_WEBHOOK_SECRET が未設定のため Webhook を検証できません")
+        return Response(status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    sig_header = request.META.get('HTTP_STRIPE_SIGNATURE', '')
+    payload = request.body
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except ValueError:
+        # ペイロードが不正
+        logger.warning("Stripe Webhook: ペイロードの解析に失敗しました")
+        return Response(status=status.HTTP_400_BAD_REQUEST)
+    except stripe.error.SignatureVerificationError:
+        # 署名検証に失敗（なりすましの可能性）
+        logger.warning("Stripe Webhook: 署名検証に失敗しました")
+        return Response(status=status.HTTP_400_BAD_REQUEST)
+
+    event_type = event.get('type')
+
+    # 関心があるのは決済成功イベントのみ。それ以外は 200 で受理して無視する。
+    if event_type != 'payment_intent.succeeded':
+        return Response(status=status.HTTP_200_OK)
+
+    payment_intent = event['data']['object']
+    payment_intent_id = payment_intent.get('id', '') or ''
+
+    if not payment_intent_id:
+        logger.warning("Stripe Webhook: payment_intent.id が空です")
+        return Response(status=status.HTTP_200_OK)
+
+    grace_seconds = getattr(settings, 'STRIPE_WEBHOOK_BOOKING_GRACE_SECONDS', 10)
+
+    # 予約が存在すれば正常に処理済み。何もしない。
+    if _booking_exists_with_grace(payment_intent_id, grace_seconds):
+        return Response(status=status.HTTP_200_OK)
+
+    # 予約が見つからない = 決済成功済みだが予約未保存。運営へ通知する。
+    notified = _notify_unmatched_payment(payment_intent)
+
+    # 通知に失敗した場合は 500 を返し、Stripe の自動再送で再試行させる
+    if not notified:
+        return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response(status=status.HTTP_200_OK)

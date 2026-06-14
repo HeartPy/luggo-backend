@@ -20,7 +20,8 @@ from django.template import TemplateDoesNotExist
 from django.template.loader import render_to_string
 
 from business_owners.models import BusinessProfile
-from project.email import send_email
+from project.email import operations_recipients, send_email
+from project.utils import mask_sensitive_id
 from .models import LuggageBooking
 
 
@@ -245,3 +246,49 @@ def send_booking_confirmation_email(booking: LuggageBooking) -> bool:
         to=booking.customer_email,
         html=html,
     )
+
+
+def send_unmatched_payment_alert(
+    *,
+    payment_intent_id: str,
+    amount: Optional[int],
+    customer_name: Optional[str] = None,
+    customer_email: Optional[str] = None,
+    business_name: Optional[str] = None,
+    created_iso: Optional[str] = None,
+) -> bool:
+    """
+    決済成功済みだが対応する予約レコードが無いことを運営へ通知。
+
+    返金または手動での予約登録の要否を運営が判断できるよう、
+    PaymentIntent の情報と Stripe ダッシュボードへのリンクを本文に含める。
+    """
+    recipients = operations_recipients()
+    if not recipients:
+        logger.error(
+            "OPERATIONS_NOTIFICATION_EMAIL が未設定のため未照合決済アラートを送信できません: "
+            "payment_intent_id=%s",
+            mask_sensitive_id(payment_intent_id),
+        )
+        return False
+
+    context = {
+        "payment_intent_id": payment_intent_id,
+        "amount_display": f"¥{amount:,}" if isinstance(amount, int) else "-",
+        "customer_name": customer_name or "-",
+        "customer_email": customer_email or "-",
+        "business_name": business_name or "-",
+        "created_iso": created_iso or "-",
+        "dashboard_url": f"https://dashboard.stripe.com/payments/{payment_intent_id}",
+    }
+
+    try:
+        subject, text, html = _render_email("unmatched_payment_alert", context)
+    except Exception:
+        logger.exception(
+            "未照合決済アラートの組み立てに失敗しました: payment_intent_id=%s",
+            mask_sensitive_id(payment_intent_id),
+        )
+        return False
+
+    return send_email(subject=subject, text=text, to=recipients, html=html)

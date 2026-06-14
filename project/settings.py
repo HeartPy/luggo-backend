@@ -175,6 +175,10 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY', default='')
 STRIPE_WEBHOOK_SECRET = config('STRIPE_WEBHOOK_SECRET', default='')
 
+# Stripe Webhook 設定
+STRIPE_WEBHOOK_BOOKING_GRACE_SECONDS = config(
+    'STRIPE_WEBHOOK_BOOKING_GRACE_SECONDS', default=10, cast=int
+)
 
 # Resend 設定
 RESEND_API_KEY = config('RESEND_API_KEY', default='')
