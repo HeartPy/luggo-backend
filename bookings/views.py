@@ -17,6 +17,7 @@ from project.utils import mask_sensitive_id
 from business_owners.models import BusinessProfile
 from .models import LuggageBooking
 from .serializers import LuggageBookingSerializer, LuggageBookingCreateSerializer
+from .emails import send_booking_confirmation_email
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 logger = logging.getLogger(__name__)
@@ -588,6 +589,11 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
                     logger.info(
                         f"予約作成成功: booking_id={booking.id}, "
                         f"payment_intent_id={mask_sensitive_id(payment_intent_id)}"
+                    )
+
+                    # 予約確認メールはトランザクション確定後に送信
+                    transaction.on_commit(
+                        lambda: send_booking_confirmation_email(booking)
                     )
 
                     # レスポンス返却用: 作成後に生成されたID、予約番号を含む完全な予約情報をシリアライズ
