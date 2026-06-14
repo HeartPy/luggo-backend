@@ -1,22 +1,25 @@
 from rest_framework import generics, status, permissions
 from rest_framework.response import Response
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.request import Request
 from django.db.models import Q, QuerySet
 from django.db import transaction
 from django.conf import settings
+from django.views.decorators.csrf import csrf_exempt
 from typing import Any, Optional
 from uuid import UUID
-from datetime import date as date_type
+from datetime import date as date_type, datetime as dt_datetime, timezone as dt_timezone
 import requests
 import stripe
 import logging
 import re
+import time
 
 from project.utils import mask_sensitive_id
 from business_owners.models import BusinessProfile
 from .models import LuggageBooking
 from .serializers import LuggageBookingSerializer, LuggageBookingCreateSerializer
+from .emails import send_booking_confirmation_email, send_unmatched_payment_alert
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 logger = logging.getLogger(__name__)
@@ -96,6 +99,37 @@ def pref_code_from_postal(postal_code: str) -> Optional[str]:
     if not postal_code or len(postal_code) < 2:
         return None
     return _POSTAL_PREFIX_TO_PREF.get(postal_code[:2])
+
+
+def calculate_server_total_amount(
+    business_profile: BusinessProfile,
+    delivery_postal_code: str,
+    luggage_counts: dict[str, int],
+) -> int:
+    """事業者の pricing_rules と配達先郵便番号、荷物個数からサーバー側で合計金額を再計算する。
+
+    フロントから送られてくる total_amount を信用せず、決済前に必ずこの関数で計算した値と
+    突合する事で、フロントのキャッシュ古化や改ざんによる不正金額決済を防止する。
+    """
+    pricing_rules: dict[str, dict[str, Any]] = business_profile.pricing_rules or {}
+    delivery_pref = pref_code_from_postal(delivery_postal_code) if delivery_postal_code else None
+    pref_prices: dict[str, Any] = pricing_rules.get(delivery_pref, {}) if delivery_pref else {}
+
+    total = 0
+    for key, count in luggage_counts.items():
+        raw_price = pref_prices.get(key, 0) or 0
+        try:
+            price = int(raw_price)
+        except (ValueError, TypeError):
+            continue
+        try:
+            qty = int(count)
+        except (ValueError, TypeError):
+            continue
+        if price <= 0 or qty <= 0:
+            continue
+        total += price * qty
+    return total
 
 
 @api_view(['GET'])
@@ -520,28 +554,64 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-                # Step2で選択された荷物情報と金額を取得（フロントエンドから送られてくる値をそのまま使用）
-                luggage_items = request.data.get('luggage_items', {})
-                total_amount = request.data.get('total_amount')
+                # 予約を担当する事業者を PaymentIntent から逆引き。
+                # create-payment-intent 時に transfer_data.destination = business_profile.stripe_account_id を
+                # サーバー側で設定しているため、ここを真とすればクライアントの business_owner_id 改ざんを
+                # 受け付けず、決済の着金先と予約レコードの紐付けが必ず一致する。
+                transfer_data = getattr(payment_intent, 'transfer_data', None)
+                destination_account_id = ''
+                if transfer_data is not None:
+                    destination_account_id = (
+                        getattr(transfer_data, 'destination', '')
+                        or (transfer_data.get('destination', '') if isinstance(transfer_data, dict) else '')
+                        or ''
+                    )
+                destination_account_id = (destination_account_id or '').strip()
 
-                if total_amount is None:
+                if not destination_account_id:
+                    logger.error(
+                        f"PaymentIntent に transfer_data.destination が設定されていません: "
+                        f"payment_intent_id={mask_sensitive_id(payment_intent_id)}"
+                    )
                     return Response(
-                        {'errMsg': '合計金額が指定されていません。'},
-                        status=status.HTTP_400_BAD_REQUEST
+                        {'errMsg': '決済情報の確認に失敗しました。'},
+                        status=status.HTTP_400_BAD_REQUEST,
                     )
 
-                # total_amountを数値に変換
                 try:
-                    total_amount = int(float(total_amount))
-                except (ValueError, TypeError):
+                    business_profile = BusinessProfile.objects.get(
+                        stripe_account_id=destination_account_id,
+                    )
+                except BusinessProfile.DoesNotExist:
+                    logger.error(
+                        f"transfer_data.destination に対応する事業者が見つかりません: "
+                        f"payment_intent_id={mask_sensitive_id(payment_intent_id)}, "
+                        f"destination={mask_sensitive_id(destination_account_id)}"
+                    )
                     return Response(
-                        {'errMsg': '合計金額の形式が正しくありません。'},
+                        {'errMsg': '決済情報の確認に失敗しました。'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                # Step2で選択された荷物情報を取得
+                luggage_items = request.data.get('luggage_items', {})
+
+                # 合計金額は Stripe の PaymentIntent.amount を真として扱う。
+                # フロントから送られる total_amount は信用せず、実際に決済された金額を予約レコードに保存する。
+                try:
+                    total_amount = int(payment_intent.amount)
+                except (AttributeError, ValueError, TypeError):
+                    logger.error(
+                        f"PaymentIntent.amount の取得に失敗: payment_intent_id={mask_sensitive_id(payment_intent_id)}"
+                    )
+                    return Response(
+                        {'errMsg': '決済情報の確認に失敗しました。'},
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
                 if total_amount <= 0:
                     return Response(
-                        {'errMsg': '合計金額は1円以上である必要があります。'},
+                        {'errMsg': '決済金額が不正です。'},
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
@@ -578,16 +648,23 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-                # 予約を保存（荷物情報と金額を含める）
+                # 予約を保存（事業者・荷物情報・金額を含める）
                 try:
                     booking = serializer.save(
+                        business_owner=business_profile,
                         luggage_items=luggage_counts,
-                        total_amount=total_amount
+                        total_amount=total_amount,
                     )
 
                     logger.info(
                         f"予約作成成功: booking_id={booking.id}, "
+                        f"business_owner_id={business_profile.id}, "
                         f"payment_intent_id={mask_sensitive_id(payment_intent_id)}"
+                    )
+
+                    # 予約確認メールはトランザクション確定後に送信
+                    transaction.on_commit(
+                        lambda: send_booking_confirmation_email(booking)
                     )
 
                     # レスポンス返却用: 作成後に生成されたID、予約番号を含む完全な予約情報をシリアライズ
@@ -763,8 +840,9 @@ def create_payment_intent(request: Request) -> Response:
         total_amount = request.data.get('total_amount')
 
         if total_amount is None:
+            logger.warning("create_payment_intent: total_amount is missing")
             return Response(
-                {'errMsg': '合計金額が指定されていません。'},
+                {'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -772,14 +850,16 @@ def create_payment_intent(request: Request) -> Response:
         try:
             amount_in_yen = int(float(total_amount))
         except (ValueError, TypeError):
+            logger.warning("create_payment_intent: invalid total_amount format: %r", total_amount)
             return Response(
-                {'errMsg': '合計金額の形式が正しくありません。'},
+                {'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         if amount_in_yen <= 0:
+            logger.warning("create_payment_intent: non-positive total_amount: %s", amount_in_yen)
             return Response(
-                {'errMsg': '合計金額は1円以上である必要があります。'},
+                {'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -810,8 +890,9 @@ def create_payment_intent(request: Request) -> Response:
 
         # 最低1点以上の荷物が必要
         if total_items < 1:
+            logger.warning("create_payment_intent: no luggage items selected")
             return Response(
-                {'errMsg': '最低1点以上の荷物を選択してください。'},
+                {'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -825,15 +906,20 @@ def create_payment_intent(request: Request) -> Response:
         # 予約フォームの事業者（サブドメインで特定）から Stripe Connect アカウントID を取得
         business_owner_id = request.data.get('business_owner_id')
         if not business_owner_id:
+            logger.warning("create_payment_intent: business_owner_id is missing")
             return Response(
-                {'errMsg': '事業者が指定されていません。'},
+                {'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         try:
             business_profile = BusinessProfile.objects.get(id=business_owner_id)
         except (BusinessProfile.DoesNotExist, ValueError):
+            logger.warning(
+                "create_payment_intent: business profile not found: %s",
+                mask_sensitive_id(str(business_owner_id)),
+            )
             return Response(
-                {'errMsg': '指定された事業者が見つかりません。'},
+                {'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         connected_account_id = (business_profile.stripe_account_id or '').strip()
@@ -952,6 +1038,41 @@ def create_payment_intent(request: Request) -> Response:
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
+        # サーバー側で合計金額を再計算してフロントの total_amount と突合する。
+        # ここでズレが出るのは「事業者が料金を変更した」「フロントのキャッシュが古い」「リクエスト改ざん」の何れか。
+        # 不一致時はサーバー再計算結果を正として返し、ユーザーに最新金額の確認を促す。
+        server_total_amount = calculate_server_total_amount(
+            business_profile,
+            delivery_postal_code,
+            luggage_counts,
+        )
+
+        if server_total_amount <= 0:
+            return Response(
+                {'errMsg': '料金が設定されていません。事業者にお問い合わせください。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if server_total_amount != amount_in_yen:
+            logger.warning(
+                "total_amount mismatch: client=%s server=%s business_owner=%s delivery_postal=%s",
+                amount_in_yen,
+                server_total_amount,
+                business_owner_id,
+                mask_sensitive_id(delivery_postal_code),
+            )
+            return Response(
+                {
+                    'errMsg': (
+                        f'料金が更新されました。最新の合計金額は ¥{server_total_amount:,} です。'
+                        'お手数ですが、お戻りいただき内容をご確認の上、もう一度お進みください。'
+                    ),
+                    'server_total_amount': server_total_amount,
+                    'client_total_amount': amount_in_yen,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Payment Intent作成パラメータを準備
         payment_intent_params = {
             'amount': amount_in_yen,
@@ -994,12 +1115,151 @@ def create_payment_intent(request: Request) -> Response:
         )
 
     except stripe.error.StripeError as e:
+        logger.warning("Stripe error in create_payment_intent: %s", str(e))
         return Response(
-            {'errMsg': f'Stripeエラーが発生しました: {str(e)}'},
+            {'errMsg': '支払い情報の取得に失敗しました。'},
             status=status.HTTP_400_BAD_REQUEST
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Unexpected error in create_payment_intent")
         return Response(
-            {'errMsg': f'予期しないエラーが発生しました: {str(e)}'},
+            {'errMsg': '支払い情報の取得に失敗しました。'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+def _booking_exists_with_grace(payment_intent_id: str, grace_seconds: int) -> bool:
+    """
+    指定の payment_intent_id に対応する予約が存在するかを確認する。
+
+    フロントの予約作成POST（confirm.vue は最大3回・指数バックオフで再送）が完了する前に
+    Webhook が到達するレースがあるため、即時チェックで見つからない場合は猶予時間内で
+    数回ポーリングし、誤った「予約なし」判定を避ける。
+    """
+    if LuggageBooking.objects.filter(payment_intent_id=payment_intent_id).exists():
+        return True
+
+    if grace_seconds <= 0:
+        return False
+
+    poll_interval = 1.0
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        if LuggageBooking.objects.filter(payment_intent_id=payment_intent_id).exists():
+            return True
+    return False
+
+
+def _notify_unmatched_payment(payment_intent: Any) -> bool:
+    """決済成功済みだが予約レコードが無い場合に運営へ通知する。送信成功で True。"""
+    payment_intent_id = payment_intent.get('id', '') or ''
+    amount = payment_intent.get('amount')
+    receipt_email = payment_intent.get('receipt_email')
+
+    metadata = payment_intent.get('metadata') or {}
+    customer_name = metadata.get('customer_name') if hasattr(metadata, 'get') else None
+
+    created_iso: Optional[str] = None
+    created_ts = payment_intent.get('created')
+    if created_ts:
+        try:
+            created_iso = (
+                dt_datetime.fromtimestamp(int(created_ts), tz=dt_timezone.utc)
+                .astimezone()
+                .isoformat()
+            )
+        except (ValueError, TypeError, OSError):
+            created_iso = None
+
+    # 事業者を transfer_data.destination（Stripe Connect アカウントID）から逆引きする
+    business_name: Optional[str] = None
+    transfer_data = payment_intent.get('transfer_data') or {}
+    destination = (
+        transfer_data.get('destination') if hasattr(transfer_data, 'get') else None
+    )
+    if destination:
+        try:
+            business_profile = BusinessProfile.objects.get(stripe_account_id=destination)
+            business_name = business_profile.company_name
+        except BusinessProfile.DoesNotExist:
+            business_name = None
+
+    logger.error(
+        "未照合の成功決済を検知（対応する予約レコードなし）: payment_intent_id=%s, amount=%s",
+        mask_sensitive_id(payment_intent_id),
+        amount,
+    )
+
+    return send_unmatched_payment_alert(
+        payment_intent_id=payment_intent_id,
+        amount=amount,
+        customer_name=customer_name,
+        customer_email=receipt_email,
+        business_name=business_name,
+        created_iso=created_iso,
+    )
+
+
+@csrf_exempt
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def stripe_webhook(request: Request) -> Response:
+    """
+    Stripe Webhook 受信エンドポイント
+
+    payment_intent.succeeded を受け取り、対応する予約レコードが存在しない場合に
+    運営へメール通知する（決済は成功しているが予約保存に失敗、もしくは決済直後に
+    ユーザーが離脱したケースの検知）。
+
+    PaymentIntent はプラットフォームアカウント上で destination charge として作成して
+    いるため、本 Webhook はプラットフォームアカウントに対して設定する（連結アカウント
+    側ではない）。
+    """
+    webhook_secret = settings.STRIPE_WEBHOOK_SECRET
+    if not webhook_secret:
+        logger.error("STRIPE_WEBHOOK_SECRET が未設定のため Webhook を検証できません")
+        return Response(status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    sig_header = request.META.get('HTTP_STRIPE_SIGNATURE', '')
+    payload = request.body
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except ValueError:
+        # ペイロードが不正
+        logger.warning("Stripe Webhook: ペイロードの解析に失敗しました")
+        return Response(status=status.HTTP_400_BAD_REQUEST)
+    except stripe.error.SignatureVerificationError:
+        # 署名検証に失敗（なりすましの可能性）
+        logger.warning("Stripe Webhook: 署名検証に失敗しました")
+        return Response(status=status.HTTP_400_BAD_REQUEST)
+
+    event_type = event.get('type')
+
+    # 関心があるのは決済成功イベントのみ。それ以外は 200 で受理して無視する。
+    if event_type != 'payment_intent.succeeded':
+        return Response(status=status.HTTP_200_OK)
+
+    payment_intent = event['data']['object']
+    payment_intent_id = payment_intent.get('id', '') or ''
+
+    if not payment_intent_id:
+        logger.warning("Stripe Webhook: payment_intent.id が空です")
+        return Response(status=status.HTTP_200_OK)
+
+    grace_seconds = getattr(settings, 'STRIPE_WEBHOOK_BOOKING_GRACE_SECONDS', 10)
+
+    # 予約が存在すれば正常に処理済み。何もしない。
+    if _booking_exists_with_grace(payment_intent_id, grace_seconds):
+        return Response(status=status.HTTP_200_OK)
+
+    # 予約が見つからない = 決済成功済みだが予約未保存。運営へ通知する。
+    notified = _notify_unmatched_payment(payment_intent)
+
+    # 通知に失敗した場合は 500 を返し、Stripe の自動再送で再試行させる
+    if not notified:
+        return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response(status=status.HTTP_200_OK)

@@ -1,0 +1,20 @@
+LugGo 運営の皆さまへ
+
+Stripe 上で決済が成功していますが、対応する予約レコードがデータベースに存在しません。
+お客様には課金されている一方で予約が登録されていないため、
+返金、または内容を確認のうえ手動での予約登録が必要な可能性があります。
+
+----------------------------------------
+PaymentIntent ID : {{ payment_intent_id }}
+金額             : {{ amount_display }}
+顧客名           : {{ customer_name }}
+顧客メール       : {{ customer_email }}
+事業者           : {{ business_name }}
+決済日時         : {{ created_iso }}
+----------------------------------------
+
+Stripe ダッシュボードで確認:
+{{ dashboard_url }}
+
+このメールは Stripe の payment_intent.succeeded Webhook を受信した際、
+対応する予約が見つからなかった場合に自動送信されています。

@@ -1,16 +1,17 @@
 from django.utils import timezone
-from django.core.mail import send_mail
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from typing import Optional, Tuple
 import secrets
 import logging
+
+from project.email import send_email
 from .models import PasswordResetToken
+
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
-
 
 def generate_login_verification_code(user: User) -> str:
     """ログイン用認証コードを生成（6桁の数字）"""
@@ -75,19 +76,7 @@ LugGo（ラグゴー）をご利用いただきありがとうございます。
 LugGo（ラグゴー）
 """
 
-    try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            fail_silently=False,
-        )
-        logger.info(f"ログイン認証コードメール送信成功: email={user.email}")
-        return True
-    except Exception as e:
-        logger.error(f"ログイン認証コードメール送信失敗: email={user.email}, error={str(e)}", exc_info=True)
-        return False
+    return send_email(subject=subject, text=message, to=user.email)
 
 
 def verify_login_code(user: User, code: str) -> bool:
@@ -160,19 +149,7 @@ LugGo（ラグゴー）をご利用いただきありがとうございます。
 LugGo（ラグゴー）
 """
 
-    try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            fail_silently=False,
-        )
-        logger.info(f"パスワード再設定メール送信成功: email={user.email}")
-        return True
-    except Exception as e:
-        logger.error(f"パスワード再設定メール送信失敗: email={user.email}, error={str(e)}", exc_info=True)
-        return False
+    return send_email(subject=subject, text=message, to=user.email)
 
 
 def verify_password_reset_token(token: str) -> Optional[PasswordResetToken]:

@@ -175,6 +175,22 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY', default='')
 STRIPE_WEBHOOK_SECRET = config('STRIPE_WEBHOOK_SECRET', default='')
 
+# Stripe Webhook 設定
+STRIPE_WEBHOOK_BOOKING_GRACE_SECONDS = config(
+    'STRIPE_WEBHOOK_BOOKING_GRACE_SECONDS', default=10, cast=int
+)
+
+# Resend 設定
+RESEND_API_KEY = config('RESEND_API_KEY', default='')
+RESEND_FROM_EMAIL = config('RESEND_FROM_EMAIL', default=DEFAULT_FROM_EMAIL)
+
+# 運営への通知先メールアドレス（カンマ区切りで複数指定可）
+OPERATIONS_NOTIFICATION_EMAIL = config(
+    'OPERATIONS_NOTIFICATION_EMAIL',
+    default='',
+    cast=lambda value: [item.strip() for item in value.split(',') if item.strip()],
+)
+
 # フロントエンドのベースURL
 FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='http://localhost:3000')
 
