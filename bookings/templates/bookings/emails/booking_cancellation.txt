@@ -1,0 +1,37 @@
+{{ customer_name }} 様
+
+ご予約いただいておりました手荷物配送につきまして、下記のとおりキャンセルされましたのでお知らせいたします。
+お支払いいただいた料金は全額返金いたします。
+返金がご利用明細に反映されるまでには、カード会社により数日〜2週間程度かかる場合がございます。
+
+■ 予約番号
+  {{ booking_number }}
+
+■ 集荷
+  場所：{{ pickup_location_name }}
+  住所：{{ pickup_location_address }}
+  集荷日：{{ pickup_date }}
+
+■ お届け
+  場所：{{ delivery_location_name }}
+  住所：{{ delivery_location_address }}
+  お届け日：{{ delivery_date }}
+
+■ お荷物
+{% for item in luggage_lines %}
+  ・{{ item.label }} × {{ item.count }}個
+{% endfor %}
+■ 返金予定金額
+  ¥{{ total_amount_display }}（税込）
+
+ご不明な点がございましたら、運営までお問い合わせください。
+
+※このメールは送信専用です。ご返信いただいてもお答えできません。
+{% if business_name %}
+----------------------------------------
+{{ business_name }}{% if business_address %}
+{{ business_address }}{% endif %}{% if business_phone %}
+お問い合わせ先電話番号：{{ business_phone }}{% endif %}{% if business_email %}
+お問い合わせ先メールアドレス：{{ business_email }}{% endif %}
+----------------------------------------
+{% endif %}

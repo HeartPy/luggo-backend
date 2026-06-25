@@ -248,6 +248,91 @@ def send_booking_confirmation_email(booking: LuggageBooking) -> bool:
     )
 
 
+def _driver_recipient(booking: LuggageBooking) -> tuple[Optional[str], str]:
+    """キャンセル通知の宛先となる配達者のメールと表示名を返す"""
+    driver = booking.driver
+    if driver is None or not driver.user_id:
+        return None, ""
+
+    user = driver.user
+    email = (getattr(user, "email", "") or "").strip()
+    name = (user.get_full_name() or "").strip()
+    if not name:
+        company_name = (driver.company_name or "").strip()
+        name = f"{company_name}\nご担当者" if company_name else "ご担当者"
+    return (email or None), name
+
+
+def send_booking_cancellation_email_to_customer(booking: LuggageBooking) -> bool:
+    """
+    予約キャンセル時にユーザー（旅行者）へキャンセル通知メールを送信。送信成功で True。
+
+    返金やステータス更新が完了した後に呼ぶこと。
+    """
+    if not booking.customer_email:
+        logger.error(
+            "キャンセル通知メールを送信できません（顧客メール未設定）: booking_id=%s",
+            booking.id,
+        )
+        return False
+
+    try:
+        context = _booking_context(booking)
+        subject, text, html = _render_email("booking_cancellation", context)
+    except Exception:
+        logger.exception(
+            "顧客向けキャンセル通知メールの組み立てに失敗しました: booking_id=%s",
+            booking.id,
+        )
+        return False
+
+    return send_email(
+        subject=subject,
+        text=text,
+        to=booking.customer_email,
+        html=html,
+    )
+
+
+def send_booking_cancellation_email_to_driver(booking: LuggageBooking) -> bool:
+    """予約キャンセル時に担当配達者へキャンセル通知メールを送信。送信成功で True。"""
+    email, driver_name = _driver_recipient(booking)
+    if not email:
+        logger.info(
+            "配達者向けキャンセル通知をスキップしました（宛先なし）: booking_id=%s",
+            booking.id,
+        )
+        return False
+
+    try:
+        context = _booking_context(booking)
+        context["driver_name"] = driver_name
+        subject, text, html = _render_email("booking_cancellation_driver", context)
+    except Exception:
+        logger.exception(
+            "配達者向けキャンセル通知メールの組み立てに失敗しました: booking_id=%s",
+            booking.id,
+        )
+        return False
+
+    return send_email(
+        subject=subject,
+        text=text,
+        to=email,
+        html=html,
+    )
+
+
+def send_booking_cancellation_emails(booking: LuggageBooking) -> None:
+    """
+    予約キャンセル時に顧客と担当配達者の双方へ通知メールを送信
+
+    一方の送信失敗が他方を妨げないよう、それぞれ独立して送信する。
+    """
+    send_booking_cancellation_email_to_customer(booking)
+    send_booking_cancellation_email_to_driver(booking)
+
+
 def send_unmatched_payment_alert(
     *,
     payment_intent_id: str,

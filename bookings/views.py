@@ -19,7 +19,11 @@ from project.utils import mask_sensitive_id
 from business_owners.models import BusinessProfile
 from .models import LuggageBooking
 from .serializers import LuggageBookingSerializer, LuggageBookingCreateSerializer
-from .emails import send_booking_confirmation_email, send_unmatched_payment_alert
+from .emails import (
+    send_booking_cancellation_emails,
+    send_booking_confirmation_email,
+    send_unmatched_payment_alert,
+)
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 logger = logging.getLogger(__name__)
@@ -792,6 +796,9 @@ def cancel_booking(request: Request, booking_id: UUID) -> Response:
 
     booking.delivery_status = 'cancelled'
     booking.save()
+
+    # キャンセル確定後に顧客・配達者へ通知メールを送信
+    transaction.on_commit(lambda: send_booking_cancellation_emails(booking))
 
     return Response(
         {'message': '予約がキャンセルされました。'},

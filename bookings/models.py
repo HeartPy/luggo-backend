@@ -36,6 +36,15 @@ class LuggageBooking(models.Model):
         default='before_pickup',
         verbose_name='配達状況'
     )
+    driver = models.ForeignKey(
+        'drivers.DriverProfile',
+        on_delete=models.SET_NULL,
+        related_name='assigned_bookings',
+        null=True,
+        blank=True,
+        verbose_name='配達者',
+        help_text='この予約を担当する配達者'
+    )
 
     # 集荷情報
     pickup_location_name = models.CharField(
