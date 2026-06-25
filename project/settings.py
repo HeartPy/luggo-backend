@@ -113,6 +113,9 @@ CORS_ALLOWED_ORIGINS = config(
 
 CORS_ALLOW_CREDENTIALS = True
 
+# CSV ダウンロード時にフロントエンドがファイル名を読めるよう公開する
+CORS_EXPOSE_HEADERS = ['Content-Disposition']
+
 CSRF_TRUSTED_ORIGINS = config(
     'CSRF_TRUSTED_ORIGINS',
     default='http://localhost:3000,http://127.0.0.1:3000',

@@ -1,10 +1,20 @@
 from django.urls import path, URLPattern
 from . import views
+from bookings import owner_views as booking_owner_views
 
 
 urlpatterns: list[URLPattern] = [
     # ログイン済み事業者向け
     path('profile', views.get_current_business_profile, name='get_current_business_profile'),
+
+    # 予約一覧
+    path('bookings', booking_owner_views.list_bookings, name='business_bookings_list'),
+    path('bookings/statuses', booking_owner_views.update_booking_statuses, name='business_bookings_update_statuses'),
+    path('bookings/drivers', booking_owner_views.assign_booking_drivers, name='business_bookings_assign_drivers'),
+    path('bookings/cancel', booking_owner_views.cancel_bookings, name='business_bookings_cancel'),
+    path('bookings/export', booking_owner_views.export_bookings_csv, name='business_bookings_export'),
+    path('bookings/<uuid:booking_id>', booking_owner_views.update_booking, name='business_bookings_update'),
+    path('drivers', booking_owner_views.list_drivers, name='business_drivers_list'),
     path('profile/pricing', views.update_profile_pricing, name='update_profile_pricing'),
     path('profile/pricing/draft', views.pricing_draft, name='pricing_draft'),
     path('profile/settings', views.business_settings, name='business_settings'),

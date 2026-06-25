@@ -2,6 +2,7 @@ from typing import Any, Dict
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from rest_framework import serializers
+from drivers.models import DriverProfile
 from .models import LuggageBooking
 
 _JST = ZoneInfo("Asia/Tokyo")
@@ -80,6 +81,71 @@ class LuggageBookingSerializer(serializers.ModelSerializer[LuggageBooking]):
                     'delivery_date': '配送日は集荷日以降の日付を指定してください。'
                 })
 
+        return data
+
+
+class OwnerBookingUpdateSerializer(serializers.ModelSerializer[LuggageBooking]):
+    """
+    事業者が予約一覧の詳細から編集できる項目を更新するためのシリアライザー
+
+    顧客向けの予約期間（前日23時締切・半年先まで）バリデーションは適用しない。
+    """
+
+    # キャンセルは専用ボタンで行うため編集対象外
+    EDITABLE_STATUSES = ('before_pickup', 'picked_up', 'delivered')
+
+    driver = serializers.PrimaryKeyRelatedField(
+        queryset=DriverProfile.objects.none(),
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = LuggageBooking
+        fields = [
+            'delivery_status',
+            'driver',
+            'pickup_location_name',
+            'pickup_location_address',
+            'pickup_date',
+            'delivery_location_name',
+            'delivery_location_address',
+            'delivery_date',
+            'customer_name',
+            'customer_email',
+            'customer_phone_number',
+            'customer_nationality',
+            'guest_name',
+            'notes',
+        ]
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # 配達者の選択肢をログイン中の事業者所属のものに限定する
+        business_profile = self.context.get('business_profile')
+        if business_profile is not None:
+            self.fields['driver'].queryset = DriverProfile.objects.filter(
+                business_owner=business_profile
+            )
+
+    def validate_delivery_status(self, value: str) -> str:
+        if value not in self.EDITABLE_STATUSES:
+            raise serializers.ValidationError('指定できない配達状況です。')
+        return value
+
+    def validate(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        # 部分更新でも、最終的な集荷日・配送日の関係を検証する
+        pickup_date = data.get('pickup_date')
+        delivery_date = data.get('delivery_date')
+        if pickup_date is None and self.instance is not None:
+            pickup_date = self.instance.pickup_date
+        if delivery_date is None and self.instance is not None:
+            delivery_date = self.instance.delivery_date
+
+        if pickup_date and delivery_date and delivery_date < pickup_date:
+            raise serializers.ValidationError({
+                'delivery_date': '配送日は集荷日以降の日付を指定してください。'
+            })
         return data
 
 
