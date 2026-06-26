@@ -1,14 +1,53 @@
 from django.utils import timezone
 from django.conf import settings
-from typing import Optional
+from django.template.loader import render_to_string
+from typing import Any, Optional, TYPE_CHECKING
+from urllib.parse import urlsplit
 import secrets
 import logging
 
-from project.email import send_email
+from project.email import send_email, operations_recipients, email_signature
 from .models import RegistrationToken
+
+if TYPE_CHECKING:
+    from .models import BusinessProfile
 
 
 logger = logging.getLogger(__name__)
+
+BUSINESS_TYPE_LABELS = {
+    'company': '法人',
+    'individual': '個人事業主',
+}
+
+_EMAIL_TEMPLATE_DIR = "business_owners/emails"
+
+def _render_email(template_base: str, context: dict[str, Any]) -> tuple[str, str]:
+    """件名・テキスト本文をテンプレートから生成"""
+    subject = render_to_string(
+        f"{_EMAIL_TEMPLATE_DIR}/{template_base}_subject.txt", context
+    ).strip()
+    body_text = render_to_string(f"{_EMAIL_TEMPLATE_DIR}/{template_base}.txt", context)
+    return subject, body_text
+
+
+def build_booking_form_url(subdomain: str) -> str:
+    """旅行者向け予約フォームの URL を組み立て"""
+    base = settings.FRONTEND_BASE_URL
+    parts = urlsplit(base)
+    protocol = parts.scheme or "https"
+    hostname = parts.hostname or ""
+    port = parts.port
+
+    # 開発環境（localhost / 127.0.0.1）はサブドメインをクエリパラメータで渡す
+    if hostname in ("localhost", "127.0.0.1"):
+        port_str = f":{port}" if port else ""
+        return f"{protocol}://{hostname}{port_str}/booking?subdomain={subdomain}"
+
+    # 本番環境はホスト名の先頭にサブドメインを付与する
+    host_parts = hostname.split(".")
+    base_domain = ".".join(host_parts[1:]) if len(host_parts) >= 3 else hostname
+    return f"{protocol}://{subdomain}.{base_domain}/booking"
 
 def generate_registration_token(email: str) -> RegistrationToken:
     """登録用トークンを生成"""
@@ -35,25 +74,14 @@ def generate_registration_token(email: str) -> RegistrationToken:
 
 def send_registration_email(email: str, token: str) -> bool:
     """登録用メールを送信"""
-    frontend_url = settings.FRONTEND_BASE_URL
-    registration_url = f"{frontend_url}/account/register?token={token}"
-
-    subject = "【LugGo】アカウント登録のご案内"
-    message = f"""
-この度は、LugGo（ラグゴー）へアカウント登録のお申し込みありがとうございます。
-
-以下のリンクから、アカウント登録を完了してください。
-このリンクは30分間のみ有効です。
-
-{registration_url}
-
-※このメールに心当たりがない場合は、このメールを無視してください。
-
----
-LugGo（ラグゴー）
-"""
-
-    return send_email(subject=subject, text=message, to=email)
+    context = {
+        "registration_url": (
+            f"{settings.FRONTEND_BASE_URL}/account/register?token={token}"
+        ),
+        "signature": email_signature(),
+    }
+    subject, text = _render_email("registration_invitation", context)
+    return send_email(subject=subject, text=text, to=email)
 
 
 def verify_registration_token(token: str) -> Optional[RegistrationToken]:
@@ -65,3 +93,60 @@ def verify_registration_token(token: str) -> Optional[RegistrationToken]:
         return None
     except RegistrationToken.DoesNotExist:
         return None
+
+
+def _registration_email_context(profile: "BusinessProfile") -> dict[str, Any]:
+    """登録完了通知メールのテンプレートに渡す共通コンテキストを組み立て"""
+    user = profile.user
+    return {
+        "company_name": profile.company_name,
+        "business_type_label": BUSINESS_TYPE_LABELS.get(
+            profile.business_type, profile.business_type
+        ),
+        "rep_name": (
+            f"{profile.rep_last_name_kanji} {profile.rep_first_name_kanji}".strip()
+        ),
+        "email": user.email,
+        "phone_number": user.phone_number,
+        "booking_url": build_booking_form_url(profile.subdomain),
+        "signature": email_signature(),
+    }
+
+
+def send_registration_completed_email_to_owner(profile: "BusinessProfile") -> bool:
+    """登録を完了した事業者へ、登録完了の通知メールを送信"""
+    user = profile.user
+    context = _registration_email_context(profile)
+    context["login_url"] = f"{settings.FRONTEND_BASE_URL}/account/login"
+
+    subject, text = _render_email("registration_completed_owner", context)
+    return send_email(subject=subject, text=text, to=user.email)
+
+
+def send_registration_completed_email_to_operations(profile: "BusinessProfile") -> bool:
+    """事業者の登録完了を運営へ通知"""
+    recipients = operations_recipients()
+    if not recipients:
+        logger.error(
+            "OPERATIONS_NOTIFICATION_EMAIL が未設定のため事業者登録完了の運営通知を送信できません: "
+            "company_name=%s",
+            profile.company_name,
+        )
+        return False
+
+    context = _registration_email_context(profile)
+    context["registered_at"] = timezone.localtime(profile.created_at).strftime(
+        "%Y年%m月%d日 %H:%M"
+    )
+
+    subject, text = _render_email("registration_completed_operations", context)
+    return send_email(subject=subject, text=text, to=recipients)
+
+
+def send_registration_completed_emails(profile: "BusinessProfile") -> None:
+    """事業者登録完了時に、事業者本人と運営の双方へ通知メールを送信
+
+    一方の送信失敗が他方を妨げないよう、それぞれ独立して送信する。
+    """
+    send_registration_completed_email_to_owner(profile)
+    send_registration_completed_email_to_operations(profile)

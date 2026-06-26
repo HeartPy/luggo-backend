@@ -33,7 +33,12 @@ from .serializers import (
     RegistrationRequestSerializer,
     RegistrationTokenVerifySerializer,
 )
-from .utils import generate_registration_token, send_registration_email, verify_registration_token
+from .utils import (
+    generate_registration_token,
+    send_registration_email,
+    verify_registration_token,
+    send_registration_completed_emails,
+)
 
 
 User = get_user_model()
@@ -2693,7 +2698,7 @@ def register_business_account(request: Request) -> Response:
 
         # BusinessProfile作成
         now = timezone.now()
-        BusinessProfile.objects.create(
+        profile = BusinessProfile.objects.create(
             user=user,
             business_type=data['business_type'],
             company_name=data['company_name'],
@@ -2726,6 +2731,17 @@ def register_business_account(request: Request) -> Response:
             f"事業者アカウント登録成功: user_id={mask_sensitive_id(user.id)}, "
             f"subdomain={data['subdomain']}, email={user.email}"
         )
+
+        # 事業者本人と運営へ登録完了の通知メールを送信
+        # メール送信の失敗が登録自体の成功を妨げないよう、例外は握りつぶす
+        try:
+            send_registration_completed_emails(profile)
+        except Exception as e:
+            logger.error(
+                f"事業者登録完了メールの送信に失敗しました: "
+                f"user_id={mask_sensitive_id(user.id)}, error={str(e)}",
+                exc_info=True,
+            )
 
         return Response({
             'message': 'アカウント登録が完了しました',
