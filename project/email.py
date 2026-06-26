@@ -32,6 +32,18 @@ def operations_recipients() -> list[str]:
     return [addr.strip() for addr in recipients if addr and addr.strip()]
 
 
+def email_signature() -> str:
+    """LugGo（運営）から送るメールに付与する共通の署名"""
+    frontend_url = getattr(settings, "FRONTEND_BASE_URL", "") or ""
+    return (
+        "※このメールは送信専用です。ご返信いただいてもお答えできません。\n\n"
+        "----------------------------------------\n"
+        "LugGo（ラグゴー）運営事務局\n"
+        f"{frontend_url}\n"
+        "----------------------------------------"
+    )
+
+
 def _resend_enabled() -> bool:
     """Resend を利用するか（API キーが設定されていれば本番送信に使う）"""
     return bool(getattr(settings, "RESEND_API_KEY", "") or "")

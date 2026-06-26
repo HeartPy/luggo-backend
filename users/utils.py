@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 import secrets
 import logging
 
-from project.email import send_email
+from project.email import send_email, email_signature
 from .models import PasswordResetToken
 
 
@@ -72,8 +72,7 @@ LugGo（ラグゴー）をご利用いただきありがとうございます。
 ※この認証コードは第三者に共有しないでください。
 ※このメールにお心当たりがない場合は、破棄してください。
 
----
-LugGo（ラグゴー）
+{email_signature()}
 """
 
     return send_email(subject=subject, text=message, to=user.email)
@@ -145,8 +144,7 @@ LugGo（ラグゴー）をご利用いただきありがとうございます。
 
 ※このメールにお心当たりがない場合は、破棄してください。
 
----
-LugGo（ラグゴー）
+{email_signature()}
 """
 
     return send_email(subject=subject, text=message, to=user.email)

@@ -1,0 +1,13 @@
+LugGo 運営の皆さまへ
+
+新しい事業者がアカウント登録を完了しました。
+
+▼ 事業者情報
+会社名・屋号　：{{ company_name }}
+事業形態　　　：{{ business_type_label }}
+代表者名　　　：{{ rep_name }}
+メールアドレス：{{ email }}
+電話番号　　　：{{ phone_number }}
+予約フォームURL：{{ booking_url }}
+
+登録日時：{{ registered_at }}
