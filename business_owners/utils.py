@@ -49,6 +49,26 @@ def build_booking_form_url(subdomain: str) -> str:
     base_domain = ".".join(host_parts[1:]) if len(host_parts) >= 3 else hostname
     return f"{protocol}://{subdomain}.{base_domain}/booking"
 
+
+def build_booking_status_url(subdomain: str) -> str:
+    """旅行者向け予約状況（確認・キャンセル）ページの URL を組み立て"""
+    base = settings.FRONTEND_BASE_URL
+    parts = urlsplit(base)
+    protocol = parts.scheme or "https"
+    hostname = parts.hostname or ""
+    port = parts.port
+
+    # 開発環境（localhost / 127.0.0.1）はサブドメインをクエリパラメータで渡す
+    if hostname in ("localhost", "127.0.0.1"):
+        port_str = f":{port}" if port else ""
+        return f"{protocol}://{hostname}{port_str}/booking/status?subdomain={subdomain}"
+
+    # 本番環境はホスト名の先頭にサブドメインを付与する
+    host_parts = hostname.split(".")
+    base_domain = ".".join(host_parts[1:]) if len(host_parts) >= 3 else hostname
+    return f"{protocol}://{subdomain}.{base_domain}/booking/status"
+
+
 def generate_registration_token(email: str) -> RegistrationToken:
     """登録用トークンを生成"""
     # 既存の有効なトークンがある場合は無効化

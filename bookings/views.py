@@ -6,6 +6,7 @@ from django.db.models import Q, QuerySet
 from django.db import transaction
 from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
+from django.http import HttpResponse
 from typing import Any, Optional
 from uuid import UUID
 from datetime import date as date_type, datetime as dt_datetime, timezone as dt_timezone
@@ -18,12 +19,14 @@ import time
 from project.utils import mask_sensitive_id
 from business_owners.models import BusinessProfile
 from .models import LuggageBooking
+from .owner_views import _refund_booking_payment
 from .serializers import LuggageBookingSerializer, LuggageBookingCreateSerializer
 from .emails import (
     send_booking_cancellation_emails,
     send_booking_confirmation_email,
     send_unmatched_payment_alert,
 )
+from .receipts import build_receipt_pdf, receipt_filename
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 logger = logging.getLogger(__name__)
@@ -761,10 +764,113 @@ class LuggageBookingDetailView(generics.RetrieveUpdateAPIView):  # type: ignore[
         )
 
 
+def _card_details(payment_intent_id: str) -> Optional[dict[str, Any]]:
+    """予約に紐づく Stripe 決済から、表示用の支払い方法情報を取得"""
+    pid = (payment_intent_id or '').strip()
+    if not pid:
+        return None
+
+    try:
+        payment_intent = stripe.PaymentIntent.retrieve(pid, expand=['payment_method'])
+    except stripe.error.StripeError as e:
+        logger.warning(
+            "支払い方法の取得に失敗: payment_intent_id=%s error=%s",
+            mask_sensitive_id(pid),
+            str(e),
+        )
+        return None
+
+    payment_method = getattr(payment_intent, 'payment_method', None)
+    if payment_method is None:
+        return None
+
+    method_type = getattr(payment_method, 'type', '') or ''
+    card = getattr(payment_method, 'card', None)
+    if card is None:
+        return {'method': method_type or 'unknown'}
+
+    # Apple Pay / Google Pay は Stripe 上ではカード決済として扱われ、
+    # card.wallet.type に 'apple_pay' / 'google_pay' が入る。
+    wallet = getattr(card, 'wallet', None)
+    wallet_type = (getattr(wallet, 'type', '') or '') if wallet is not None else ''
+
+    return {
+        'method': 'card',
+        'wallet': wallet_type,
+        'brand': getattr(card, 'brand', '') or '',
+        'last4': getattr(card, 'last4', '') or '',
+        'exp_month': getattr(card, 'exp_month', None),
+        'exp_year': getattr(card, 'exp_year', None),
+    }
+
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def lookup_booking(request: Request) -> Response:
+    """予約番号から予約情報を取得（旅行者向けの予約内容確認・キャンセル画面用）"""
+    booking_number = (request.GET.get('booking_number') or '').strip()
+    if not booking_number:
+        return Response(
+            {'errMsg': '予約番号を入力してください。'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        booking = LuggageBooking.objects.get(booking_number=booking_number)
+    except LuggageBooking.DoesNotExist:
+        return Response(
+            {'errMsg': '予約が見つかりません。予約番号をご確認ください。'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    status_labels = dict(LuggageBooking.DELIVERY_STATUS_CHOICES)
+    data = LuggageBookingSerializer(booking).data
+    data['delivery_status_label'] = status_labels.get(
+        booking.delivery_status, booking.delivery_status
+    )
+    data['can_cancel'] = booking.can_cancel()
+    data['can_download_receipt'] = booking.can_download_receipt()
+    data['payment'] = _card_details(booking.payment_intent_id)
+
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def download_receipt(request: Request, booking_id: UUID) -> HttpResponse:
+    """領収書PDFをダウンロードする（集荷済以降の予約のみ）"""
+    try:
+        booking = LuggageBooking.objects.select_related('business_owner').get(id=booking_id)
+    except LuggageBooking.DoesNotExist:
+        return Response(
+            {'errMsg': '予約が見つかりません。'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if not booking.can_download_receipt():
+        return Response(
+            {'errMsg': '集荷完了後に領収書を発行できます。'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        pdf_bytes = build_receipt_pdf(booking)
+    except Exception:
+        logger.exception("領収書PDFの生成に失敗: booking_id=%s", booking_id)
+        return Response(
+            {'errMsg': '領収書の生成に失敗しました。しばらく時間をおいて再度お試しください。'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    response = HttpResponse(pdf_bytes, content_type='application/pdf')
+    response['Content-Disposition'] = f'attachment; filename="{receipt_filename(booking)}"'
+    return response
+
+
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def cancel_booking(request: Request, booking_id: UUID) -> Response:
-    """予約キャンセル（予約IDと認証コードで認証）"""
+    """予約キャンセル（集荷前の予約のみ・全額返金）"""
     try:
         # TODO: 認証コードの検証を追加（後ほど実装）
         # verification_code = request.data.get('verification_code')
@@ -794,11 +900,29 @@ def cancel_booking(request: Request, booking_id: UUID) -> Response:
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    # 集荷日前日の23時00分以降のキャンセルは返金対象外。
+    # それより前のキャンセルのみ全額返金を行い、成功した場合だけキャンセル状態にする。
+    # （返金失敗のまま「キャンセル済み」になると未返金が放置されるため）
+    refunded = booking.is_refundable_on_cancel()
+    if refunded:
+        if not _refund_booking_payment(booking):
+            return Response(
+                {
+                    'errMsg': (
+                        '返金処理に失敗したため、キャンセルできませんでした。'
+                        'お手数ですが、時間をおいて再度お試しください。'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     booking.delivery_status = 'cancelled'
-    booking.save()
+    booking.save(update_fields=['delivery_status', 'updated_at'])
 
     # キャンセル確定後に顧客・配達者へ通知メールを送信
-    transaction.on_commit(lambda: send_booking_cancellation_emails(booking))
+    transaction.on_commit(
+        lambda: send_booking_cancellation_emails(booking, refunded=refunded)
+    )
 
     return Response(
         {'message': '予約がキャンセルされました。'},

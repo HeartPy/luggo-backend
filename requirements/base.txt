@@ -9,3 +9,4 @@ gunicorn==21.2.*
 Pillow==10.1.*
 requests==2.32.*
 stripe==9.*
+reportlab==4.*

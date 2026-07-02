@@ -124,6 +124,7 @@ def _serialize_booking(booking: LuggageBooking) -> dict[str, Any]:
         'notes': booking.notes,
         'created_at': booking.created_at.isoformat() if booking.created_at else None,
         'can_cancel': booking.can_cancel(),
+        'is_refundable_on_cancel': booking.is_refundable_on_cancel(),
     }
 
 
@@ -622,8 +623,10 @@ def cancel_bookings(request: Request) -> Response:
     """
     選択した予約を一括キャンセルする
 
-    集荷前（before_pickup）の予約のみキャンセル可能。キャンセル時には対応する
-    Stripe 決済を全額自動返金し、返金に成功した予約のみキャンセル状態にする。
+    集荷前（before_pickup）の予約のみキャンセル可能。集荷日前日23時より前の予約は
+    必ず Stripe 決済を全額自動返金する。集荷日前日23時以降の予約については、リクエストの
+    `refund` フラグ（事業者の選択）に従って返金有無を切り替える。返金を行う場合は、
+    返金に成功した予約のみキャンセル状態にする。
     """
     business_profile = _get_business_profile(request)
     if business_profile is None:
@@ -639,8 +642,11 @@ def cancel_bookings(request: Request) -> Response:
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    refund_choice = bool(request.data.get('refund', True))
+
     scoped = _scoped_queryset(business_profile)
-    cancelled_count = 0
+    refunded_count = 0
+    no_refund_count = 0
     skipped_count = 0
     refund_failed_count = 0
     for booking_id in ids:
@@ -651,33 +657,49 @@ def cancel_bookings(request: Request) -> Response:
         if not booking.can_cancel():
             skipped_count += 1
             continue
-        # 先に返金を行い、成功した場合のみキャンセル状態にする
-        # （返金失敗のまま「キャンセル済み」になると未返金が放置されるため）
-        if not _refund_booking_payment(booking):
-            refund_failed_count += 1
-            continue
+        # 集荷日前日23時より前は必ず返金。それ以降は事業者の選択に従う。
+        should_refund = booking.is_refundable_on_cancel() or refund_choice
+        if should_refund:
+            # 先に返金を行い、成功した場合のみキャンセル状態にする
+            # （返金失敗のまま「キャンセル済み」になると未返金が放置されるため）
+            if not _refund_booking_payment(booking):
+                refund_failed_count += 1
+                continue
+            refunded_count += 1
+        else:
+            no_refund_count += 1
         booking.delivery_status = 'cancelled'
         booking.save(update_fields=['delivery_status', 'updated_at'])
-        cancelled_count += 1
         # キャンセル確定後に顧客・配達者へ通知メールを送信（メール失敗は
-        # キャンセル処理自体には影響させない）
+        # キャンセル処理自体には影響させない）。
+        # 返金の有無に応じて顧客向けの文面を切り替える。
         transaction.on_commit(
-            lambda b=booking: send_booking_cancellation_emails(b)
+            lambda b=booking, r=should_refund: send_booking_cancellation_emails(
+                b, refunded=r
+            )
         )
 
+    cancelled_count = refunded_count + no_refund_count
+    message_parts = []
+    if refunded_count:
+        message_parts.append(f'{refunded_count}件の予約をキャンセルし、返金しました。')
+    if no_refund_count:
+        message_parts.append(f'{no_refund_count}件の予約を返金せずにキャンセルしました。')
+    if not message_parts:
+        message_parts.append('キャンセルした予約はありませんでした。')
     if refund_failed_count:
-        message = (
-            f'{cancelled_count}件の予約をキャンセルし、返金しました。'
+        message_parts.append(
             f'{refund_failed_count}件は返金に失敗したため、キャンセルしていません。'
             'お手数ですが、時間をおいて再度お試しください。'
         )
-    else:
-        message = '予約をキャンセルし、返金処理を行いました。'
+    message = ''.join(message_parts)
 
     return Response(
         {
             'message': message,
             'cancelled_count': cancelled_count,
+            'refunded_count': refunded_count,
+            'no_refund_count': no_refund_count,
             'skipped_count': skipped_count,
             'refund_failed_count': refund_failed_count,
         },

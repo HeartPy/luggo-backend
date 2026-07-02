@@ -1,7 +1,8 @@
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, time as dtime
 import time
 from typing import Any
 import secrets
@@ -167,9 +168,31 @@ class LuggageBooking(models.Model):
 
         return booking_number
 
+    # 領収書を発行できる配達状況（集荷済以降。集荷前は返金キャンセルの余地があるため除外）
+    RECEIPT_ELIGIBLE_STATUSES = ('picked_up', 'delivered')
+
     def can_cancel(self) -> bool:
         """キャンセル可能かチェック"""
         return self.delivery_status == 'before_pickup'
+
+    def can_download_receipt(self) -> bool:
+        """領収書を発行できるかチェック（集荷済以降のみ）"""
+        return self.delivery_status in self.RECEIPT_ELIGIBLE_STATUSES
+
+    def refund_deadline(self) -> datetime:
+        """返金対象となるキャンセルの締切（集荷日前日の23時00分）"""
+        deadline_naive = datetime.combine(
+            self.pickup_date - timedelta(days=1),
+            dtime(23, 0),
+        )
+        if settings.USE_TZ:
+            return timezone.make_aware(deadline_naive)
+        return deadline_naive
+
+    def is_refundable_on_cancel(self) -> bool:
+        """キャンセル時に返金可能か（集荷日前日23時00分以降は返金対象外）"""
+        now = timezone.now() if settings.USE_TZ else datetime.now()
+        return now < self.refund_deadline()
 
     def days_until_pickup(self) -> int:
         """集荷日までの日数"""

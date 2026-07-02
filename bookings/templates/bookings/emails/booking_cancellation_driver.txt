@@ -19,10 +19,9 @@
   住所：{{ delivery_location_address }}
   お届け日：{{ delivery_date }}
 
-■ お荷物
-{% for item in luggage_lines %}
-  ・{{ item.label }} × {{ item.count }}個
-{% endfor %}
+■ お荷物{% for item in luggage_lines %}
+  ・{{ item.label }} × {{ item.count }}個{% endfor %}
+
 ご不明な点がございましたら、担当事業者までお問い合わせください。
 
 ※このメールは送信専用です。ご返信いただいてもお答えできません。

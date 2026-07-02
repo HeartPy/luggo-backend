@@ -175,9 +175,38 @@
 
                 <p style="margin: 0 0 16px; font-size: 14px; line-height: 1.8">
                   ご予約内容のご確認・キャンセルは、予約番号をお手元にご用意のうえ<br />
-                  以下の予約状況ページよりお手続きいただけます。<br />
+                  以下の予約確認ページよりお手続きいただけます。<br />
                   ご不明な点がございましたら、運営までお問い合わせください。
                 </p>
+
+                {% if status_url %}
+                <table
+                  role="presentation"
+                  width="100%"
+                  cellpadding="0"
+                  cellspacing="0"
+                  style="margin: 0 0 24px"
+                >
+                  <tr>
+                    <td align="center">
+                      <a
+                        href="{{ status_url }}"
+                        style="
+                          display: inline-block;
+                          background-color: #111827;
+                          color: #fff;
+                          font-size: 14px;
+                          font-weight: bold;
+                          text-decoration: none;
+                          padding: 12px 28px;
+                          border-radius: 8px;
+                        "
+                        >予約状況を確認する</a
+                      >
+                    </td>
+                  </tr>
+                </table>
+                {% endif %}
 
                 <p style="margin: 0; font-size: 14px; line-height: 1.8; color: #6b7280">
                   ※このメールは送信専用です。ご返信いただいてもお答えできません。
