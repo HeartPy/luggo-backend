@@ -20,6 +20,7 @@ from django.template import TemplateDoesNotExist
 from django.template.loader import render_to_string
 
 from business_owners.models import BusinessProfile
+from business_owners.utils import build_booking_status_url
 from project.email import operations_recipients, send_email
 from project.utils import mask_sensitive_id
 from .models import LuggageBooking
@@ -213,6 +214,11 @@ def _booking_context(booking: LuggageBooking) -> dict[str, Any]:
         "luggage_lines": _luggage_lines(booking.luggage_items),
         "total_amount_display": f"{booking.total_amount:,}",
         "notes": booking.notes,
+        "status_url": (
+            build_booking_status_url(profile.subdomain)
+            if profile is not None and profile.subdomain
+            else None
+        ),
     }
     context.update(_business_signature(profile))
     return context
@@ -263,10 +269,13 @@ def _driver_recipient(booking: LuggageBooking) -> tuple[Optional[str], str]:
     return (email or None), name
 
 
-def send_booking_cancellation_email_to_customer(booking: LuggageBooking) -> bool:
+def send_booking_cancellation_email_to_customer(
+    booking: LuggageBooking, refunded: bool = True
+) -> bool:
     """
     予約キャンセル時にユーザー（旅行者）へキャンセル通知メールを送信。送信成功で True。
 
+    `refunded` が True の場合は返金あり、False の場合は返金なしの文面を送信する。
     返金やステータス更新が完了した後に呼ぶこと。
     """
     if not booking.customer_email:
@@ -276,9 +285,12 @@ def send_booking_cancellation_email_to_customer(booking: LuggageBooking) -> bool
         )
         return False
 
+    template_base = (
+        "booking_cancellation" if refunded else "booking_cancellation_no_refund"
+    )
     try:
         context = _booking_context(booking)
-        subject, text, html = _render_email("booking_cancellation", context)
+        subject, text, html = _render_email(template_base, context)
     except Exception:
         logger.exception(
             "顧客向けキャンセル通知メールの組み立てに失敗しました: booking_id=%s",
@@ -323,13 +335,15 @@ def send_booking_cancellation_email_to_driver(booking: LuggageBooking) -> bool:
     )
 
 
-def send_booking_cancellation_emails(booking: LuggageBooking) -> None:
+def send_booking_cancellation_emails(
+    booking: LuggageBooking, refunded: bool = True
+) -> None:
     """
     予約キャンセル時に顧客と担当配達者の双方へ通知メールを送信
 
     一方の送信失敗が他方を妨げないよう、それぞれ独立して送信する。
     """
-    send_booking_cancellation_email_to_customer(booking)
+    send_booking_cancellation_email_to_customer(booking, refunded=refunded)
     send_booking_cancellation_email_to_driver(booking)
 
 
