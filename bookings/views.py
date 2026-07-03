@@ -5,6 +5,7 @@ from rest_framework.request import Request
 from django.db.models import Q, QuerySet
 from django.db import transaction
 from django.conf import settings
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.http import HttpResponse
 from typing import Any, Optional
@@ -22,6 +23,7 @@ from .models import LuggageBooking
 from .owner_views import _refund_booking_payment
 from .serializers import LuggageBookingSerializer, LuggageBookingCreateSerializer
 from .emails import (
+    build_issuer_snapshot,
     send_booking_cancellation_emails,
     send_booking_confirmation_email,
     send_unmatched_payment_alert,
@@ -655,12 +657,23 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-                # 予約を保存（事業者・荷物情報・金額を含める）
+                # 発行者情報のスナップショット。
+                # このタイミングで発行者名・住所・連絡先を確定させ、予約に保存する。
+                # これにより後日のアカウント変更・API 障害時にも領収書を発行できる。
+                issuer_snapshot = build_issuer_snapshot(business_profile)
+
+                # 予約を保存（事業者・荷物情報・金額・発行者スナップショットを含める）
                 try:
                     booking = serializer.save(
                         business_owner=business_profile,
                         luggage_items=luggage_counts,
                         total_amount=total_amount,
+                        issuer_name=issuer_snapshot["issuer_name"],
+                        issuer_address=issuer_snapshot["issuer_address"],
+                        issuer_email=issuer_snapshot["issuer_email"],
+                        issuer_phone=issuer_snapshot["issuer_phone"],
+                        issuer_invoice_number=issuer_snapshot["issuer_invoice_number"],
+                        issuer_snapshot_at=timezone.now(),
                     )
 
                     logger.info(

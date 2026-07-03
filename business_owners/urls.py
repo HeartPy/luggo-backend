@@ -19,6 +19,7 @@ urlpatterns: list[URLPattern] = [
     path('profile/pricing/draft', views.pricing_draft, name='pricing_draft'),
     path('profile/settings', views.business_settings, name='business_settings'),
     path('profile/settings/draft', views.business_settings_draft, name='business_settings_draft'),
+    path('profile/invoice', views.business_invoice_settings, name='business_invoice_settings'),
     path('profile/public-info-consent', views.record_public_info_consent, name='record_public_info_consent'),
     path('profile/policy-agreement', views.record_policy_agreement, name='record_policy_agreement'),
     path('profile/booking-template-acknowledge', views.record_booking_template_acknowledge, name='record_booking_template_acknowledge'),

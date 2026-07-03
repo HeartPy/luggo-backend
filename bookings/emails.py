@@ -12,15 +12,17 @@ project.email.send_email に委譲（Resend / EMAIL_BACKEND を自動切替）�
 """
 
 import logging
-import re
 from datetime import date as date_type
 from typing import Any, Optional
-import stripe
 from django.template import TemplateDoesNotExist
 from django.template.loader import render_to_string
 
 from business_owners.models import BusinessProfile
 from business_owners.utils import build_booking_status_url
+from business_owners.stripe_info import (
+    format_phone_for_display,
+    get_business_stripe_info,
+)
 from project.email import operations_recipients, send_email
 from project.utils import mask_sensitive_id
 from .models import LuggageBooking
@@ -84,104 +86,33 @@ def _luggage_lines(luggage_items: Optional[dict[str, Any]]) -> list[dict[str, st
     return lines
 
 
-def _format_phone_for_display(phone: str) -> str:
-    """電話番号をメール表示用の国内形式に整形（+81... → 0...）"""
-    phone = phone.strip()
-    if not phone:
-        return ""
-    if phone.startswith("+"):
-        digits = re.sub(r"\D", "", phone)
-        if digits.startswith("81") and len(digits) > 2:
-            return f"0{digits[2:]}"
-    return phone
-
-
 def _phone_from_user(profile: BusinessProfile) -> Optional[str]:
     """事業者ユーザーに登録された電話番号を返す"""
     user = getattr(profile, "user", None)
     if user and user.phone_number:
-        formatted = _format_phone_for_display(user.phone_number)
+        formatted = format_phone_for_display(user.phone_number)
         return formatted or None
     return None
-
-
-def _format_address_kanji(addr: dict[str, Any]) -> str:
-    """Stripe の address_kanji をプレーンテキスト用の住所文字列に整形"""
-    parts = [
-        addr.get("state", ""),
-        addr.get("city", ""),
-        addr.get("town", ""),
-        addr.get("line1", ""),
-        addr.get("line2", ""),
-    ]
-    address_body = "".join(part for part in parts if part)
-
-    postal_raw = addr.get("postal_code", "")
-    postal_half = (
-        postal_raw.translate(str.maketrans("０１２３４５６７８９－", "0123456789-"))
-        if postal_raw
-        else ""
-    )
-    digits = "".join(char for char in postal_half if char.isdigit())
-    if len(digits) == 7:
-        postal_formatted = f"〒{digits[:3]}-{digits[3:]}"
-    elif postal_half:
-        postal_formatted = f"〒{postal_half}"
-    else:
-        postal_formatted = ""
-
-    if postal_formatted and address_body:
-        return f"{postal_formatted}\n{address_body}"
-    if address_body:
-        return address_body
-    if postal_formatted:
-        return postal_formatted
-    return ""
 
 
 def _enrich_business_signature_from_stripe(
     profile: BusinessProfile, signature: dict[str, Any]
 ) -> None:
-    """Stripe Connect アカウントから所在地・問い合わせ先を補完"""
-    account_id = profile.stripe_account_id
-    if not account_id:
-        return
+    """Stripe Connect アカウント（取得失敗時はキャッシュ）から所在地・問い合わせ先を補完"""
+    info = get_business_stripe_info(profile)
 
-    try:
-        account = stripe.Account.retrieve(account_id)
-    except stripe.error.StripeError:  # type: ignore[attr-defined]
-        logger.warning(
-            "予約確認メール: Stripeアカウント取得に失敗しました: business_owner_id=%s",
-            profile.id,
-        )
-        return
+    if info.get("support_email"):
+        signature["business_email"] = info["support_email"]
 
-    business_profile = account.get("business_profile") or {}
-    support_email = business_profile.get("support_email")
-    if support_email:
-        signature["business_email"] = support_email
+    if info.get("business_address"):
+        signature["business_address"] = info["business_address"]
 
-    support_phone = business_profile.get("support_phone")
+    support_phone = info.get("support_phone") or ""
+    account_phone = info.get("account_phone") or ""
     if support_phone:
-        signature["business_phone"] = _format_phone_for_display(support_phone)
-
-    business_type = account.get("business_type", "")
-    if business_type == "company":
-        addr = (account.get("company") or {}).get("address_kanji") or {}
-    else:
-        addr = (account.get("individual") or {}).get("address_kanji") or {}
-
-    formatted_address = _format_address_kanji(addr)
-    if formatted_address:
-        signature["business_address"] = formatted_address
-
-    if not signature.get("business_phone"):
-        if business_type == "company":
-            phone = (account.get("company") or {}).get("phone")
-        else:
-            phone = (account.get("individual") or {}).get("phone")
-        if phone:
-            signature["business_phone"] = _format_phone_for_display(phone)
+        signature["business_phone"] = support_phone
+    elif not signature.get("business_phone") and account_phone:
+        signature["business_phone"] = account_phone
 
 
 def _business_signature(profile: Optional[BusinessProfile]) -> dict[str, Any]:
@@ -197,6 +128,26 @@ def _business_signature(profile: Optional[BusinessProfile]) -> dict[str, Any]:
     }
     _enrich_business_signature_from_stripe(profile, signature)
     return signature
+
+
+def build_issuer_snapshot(profile: Optional[BusinessProfile]) -> dict[str, str]:
+    """
+    領収書の発行者情報スナップショット（名称・住所・連絡先）を組み立てる
+
+    決済確定時点で Stripe から取得した発行者情報を予約レコードへ保存するために使う。
+    後日 Stripe アカウントが変更・削除されても、この値で領収書を発行できる。
+    """
+    signature = _business_signature(profile)
+    invoice_number = ""
+    if profile is not None:
+        invoice_number = (profile.invoice_registration_number or "").strip()
+    return {
+        "issuer_name": (signature.get("business_name") or "").strip(),
+        "issuer_address": (signature.get("business_address") or "").strip(),
+        "issuer_email": (signature.get("business_email") or "").strip(),
+        "issuer_phone": (signature.get("business_phone") or "").strip(),
+        "issuer_invoice_number": invoice_number,
+    }
 
 
 def _booking_context(booking: LuggageBooking) -> dict[str, Any]:
