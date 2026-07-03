@@ -39,6 +39,7 @@ from .utils import (
     verify_registration_token,
     send_registration_completed_emails,
 )
+from .stripe_info import get_business_stripe_info
 
 
 User = get_user_model()
@@ -1958,6 +1959,7 @@ def get_current_business_profile(request: Request) -> Response:
             'phone_number': request.user.phone_number or '',
             'subdomain': business_profile.subdomain,
             'tax_id': business_profile.tax_id,
+            'invoice_registration_number': business_profile.invoice_registration_number,
             'rep_last_name_kanji': business_profile.rep_last_name_kanji,
             'rep_first_name_kanji': business_profile.rep_first_name_kanji,
             'rep_last_name_kana': business_profile.rep_last_name_kana,
@@ -2464,69 +2466,16 @@ def get_transaction_law_by_subdomain(request: Request) -> Response:
             'temporary_closures': business_profile.temporary_closures or [],
         }
 
-        # Stripe アカウント情報を取得
-        account_id = business_profile.stripe_account_id
-        if account_id:
-            try:
-                account = stripe.Account.retrieve(account_id)
+        # Stripe アカウント由来の情報を取得（取得失敗時はキャッシュへフォールバック）
+        info = get_business_stripe_info(business_profile, include_representative=True)
+        result['support_email'] = info.get('support_email') or ''
+        result['representative_name'] = info.get('representative_name') or ''
 
-                # サポートメールアドレス
-                bp = account.get('business_profile') or {}
-                result['support_email'] = bp.get('support_email') or ''
-
-                # 事業者所在地（address_kanji を優先）
-                bt = account.get('business_type', '')
-                if bt == 'company':
-                    addr = (account.get('company') or {}).get('address_kanji') or {}
-                else:
-                    addr = (account.get('individual') or {}).get('address_kanji') or {}
-
-                parts = [
-                    addr.get('state', ''),
-                    addr.get('city', ''),
-                    addr.get('town', ''),
-                    addr.get('line1', ''),
-                    addr.get('line2', ''),
-                ]
-                address_body = ''.join(part for part in parts if part)
-
-                postal_raw = addr.get('postal_code', '')
-                # 全角数字を半角に変換
-                postal_half = postal_raw.translate(
-                    str.maketrans('０１２３４５６７８９－', '0123456789-')
-                ) if postal_raw else ''
-                digits = ''.join(char for char in postal_half if char.isdigit())
-                if len(digits) == 7:
-                    postal_formatted = f'〒{digits[:3]}-{digits[3:]}'
-                elif postal_half:
-                    postal_formatted = f'〒{postal_half}'
-                else:
-                    postal_formatted = ''
-
-                if postal_formatted and address_body:
-                    result['address'] = f'{postal_formatted}<br />{address_body}'
-                elif address_body:
-                    result['address'] = address_body
-                elif postal_formatted:
-                    result['address'] = postal_formatted
-
-                # 代表者名（法人: Persons API、個人: individual）
-                if bt == 'company':
-                    persons = stripe.Account.list_persons(account_id, limit=100)
-                    for person in persons.data:
-                        if person.relationship and person.relationship.get('representative'):
-                            last = person.get('last_name_kanji') or ''
-                            first = person.get('first_name_kanji') or ''
-                            result['representative_name'] = f'{last} {first}'.strip()
-                            break
-                else:
-                    individual = account.get('individual') or {}
-                    last = individual.get('last_name_kanji') or ''
-                    first = individual.get('first_name_kanji') or ''
-                    result['representative_name'] = f'{last} {first}'.strip()
-
-            except stripe.error.StripeError as stripe_err:  # type: ignore[attr-defined]
-                logger.warning(f"特商法表示: Stripeアカウント取得エラー: {str(stripe_err)}")
+        # 住所は『〒xxx-xxxx\n住所本文』形式で返るため、HTML 表示用に改行を <br /> へ変換
+        address_lines = [
+            line for line in (info.get('business_address') or '').split('\n') if line
+        ]
+        result['address'] = '<br />'.join(address_lines)
 
         return Response(result, status=status.HTTP_200_OK)
 
@@ -2898,6 +2847,73 @@ def business_settings(request: Request) -> Response:
             exc_info=True,
         )
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def business_invoice_settings(request: Request) -> Response:
+    """
+    インボイス設定（適格請求書発行事業者登録番号）の取得・更新
+
+    登録番号は任意項目。空文字での更新（登録解除）も許可する。
+    形式は「T」＋13桁の数字。
+    """
+    try:
+        if not hasattr(request.user, 'business_profile'):
+            return Response(
+                {'error': '事業者情報が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        business_profile = request.user.business_profile
+
+        if request.method == 'GET':
+            return Response({
+                'invoice_registration_number': business_profile.invoice_registration_number,
+            }, status=status.HTTP_200_OK)
+
+        # PUT
+        raw = request.data.get('invoice_registration_number', '')
+        if raw is None:
+            raw = ''
+        if not isinstance(raw, str):
+            return Response(
+                {'error': '適格請求書発行事業者登録番号は文字列で指定してください。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 全角英数字を半角へ寄せ、前後空白を除去して正規化
+        number = raw.translate(
+            str.maketrans(
+                'Ｔｔ０１２３４５６７８９',
+                'Tt0123456789',
+            )
+        ).strip().upper()
+
+        if number and not re.match(r'^T\d{13}$', number):
+            return Response(
+                {'error': '適格請求書発行事業者登録番号は「T」＋13桁の数字で入力してください。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        business_profile.invoice_registration_number = number
+        business_profile.save(update_fields=['invoice_registration_number', 'updated_at'])
+
+        return Response({
+            'invoice_registration_number': business_profile.invoice_registration_number,
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(
+            "インボイス設定更新エラー: user_id=%s, error=%s",
+            mask_sensitive_id(request.user.id),
+            str(e),
+            exc_info=True,
+        )
+        return Response(
+            {'error': 'インボイス設定の保存に失敗しました。しばらく時間をおいて再度お試しください。'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 @api_view(['GET', 'PUT', 'DELETE'])

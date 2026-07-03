@@ -49,6 +49,14 @@ def validate_subdomain(value: str) -> None:
         raise ValidationError('この予約フォームのURLは使用できません。別の文字列を入力してください。')
 
 
+def validate_invoice_registration_number(value: str) -> None:
+    """適格請求書発行事業者登録番号（インボイス番号）のバリデーション"""
+    if not value:
+        return
+    if not re.match(r'^T\d{13}$', value):
+        raise ValidationError('適格請求書発行事業者登録番号は「T」＋13桁の数字で入力してください。')
+
+
 class BusinessProfileManager(models.Manager):
     """有効な事業者のみを取得するマネージャー"""
     def get_queryset(self):
@@ -68,6 +76,15 @@ class BusinessProfile(models.Model):
     company_name = models.CharField(max_length=100, verbose_name='会社名')
     company_email = models.EmailField(verbose_name='メールアドレス')
     tax_id = models.CharField(max_length=20, blank=True, verbose_name='法人番号')
+
+    invoice_registration_number = models.CharField(
+        max_length=14,
+        blank=True,
+        default='',
+        verbose_name='適格請求書発行事業者登録番号',
+        help_text='「T」＋13桁の数字（例: T1234567890123）。任意。',
+        validators=[validate_invoice_registration_number],
+    )
 
     # 代表者情報
     rep_last_name_kanji = models.CharField(max_length=50, blank=True, verbose_name='代表者姓（漢字）')
@@ -233,6 +250,38 @@ class BusinessProfile(models.Model):
 
     # Stripe Connect
     stripe_account_id = models.CharField(max_length=255, blank=True, default="", verbose_name='StripeアカウントID')
+
+    # Stripe Connect アカウント由来の表示用情報のキャッシュ。
+    # 領収書・特定商取引法に基づく表記・確認メールで発行者情報を表示する際、
+    # Stripe API 取得に失敗してもここへフォールバックできるようにする。
+    stripe_address_cache = models.TextField(
+        blank=True,
+        default="",
+        verbose_name='Stripe所在地キャッシュ',
+    )
+    stripe_support_email_cache = models.CharField(
+        max_length=254,
+        blank=True,
+        default="",
+        verbose_name='Stripe問い合わせメールキャッシュ',
+    )
+    stripe_support_phone_cache = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        verbose_name='Stripe電話番号キャッシュ',
+    )
+    stripe_representative_name_cache = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        verbose_name='Stripe代表者名キャッシュ',
+    )
+    stripe_info_cached_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='Stripe事業者情報キャッシュ更新日時',
+    )
 
     # 予約フォームのURL
     subdomain = models.CharField(

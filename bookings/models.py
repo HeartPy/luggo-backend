@@ -114,6 +114,43 @@ class LuggageBooking(models.Model):
         verbose_name='Stripe Payment Intent ID'
     )
 
+    # 発行者情報のスナップショット。
+    # 決済確定時点の事業者名・住所・連絡先を保存し、領収書はこの値を優先して使用する。
+    issuer_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='発行者名（スナップショット）',
+    )
+    issuer_address = models.TextField(
+        blank=True,
+        default='',
+        verbose_name='発行者住所（スナップショット）',
+    )
+    issuer_email = models.CharField(
+        max_length=254,
+        blank=True,
+        default='',
+        verbose_name='発行者メール（スナップショット）',
+    )
+    issuer_phone = models.CharField(
+        max_length=50,
+        blank=True,
+        default='',
+        verbose_name='発行者電話番号（スナップショット）',
+    )
+    issuer_invoice_number = models.CharField(
+        max_length=14,
+        blank=True,
+        default='',
+        verbose_name='適格請求書発行事業者登録番号（スナップショット）',
+    )
+    issuer_snapshot_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='発行者情報スナップショット保存日時',
+    )
+
     # 作成日・更新日
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日')
