@@ -1073,6 +1073,35 @@ def create_payment_intent(request: Request) -> Response:
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # 決済直前に事業者の Stripe アカウント審査が完了しているか確認
+        try:
+            connected_account = stripe.Account.retrieve(connected_account_id)
+        except stripe.error.StripeError as e:
+            logger.warning(
+                "create_payment_intent: failed to retrieve connected account: %s error=%s",
+                mask_sensitive_id(connected_account_id),
+                str(e),
+            )
+            return Response(
+                {'errMsg': 'この事業者はまだ決済の設定が完了していません。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        account_requirements = getattr(connected_account, 'requirements', None)
+        currently_due = account_requirements.get('currently_due', []) if account_requirements else []
+        charges_enabled = getattr(connected_account, 'charges_enabled', False)
+        if not charges_enabled or currently_due:
+            logger.warning(
+                "create_payment_intent: connected account not ready: %s charges_enabled=%s currently_due=%s",
+                mask_sensitive_id(connected_account_id),
+                charges_enabled,
+                len(currently_due),
+            )
+            return Response(
+                {'errMsg': 'この事業者はまだ決済の設定が完了していません。'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         # 集荷・配達地域バリデーション
         service_areas = business_profile.service_areas or []
         if not service_areas:
