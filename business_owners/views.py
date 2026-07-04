@@ -2460,6 +2460,7 @@ def get_transaction_law_by_subdomain(request: Request) -> Response:
             'representative_name': '',
             'address': '',
             'support_email': '',
+            'support_phone': '',
             'pricing_rules': business_profile.pricing_rules or {},
             'operating_days': business_profile.operating_days or '1111111',
             'nth_weekday_holidays': business_profile.nth_weekday_holidays or [],
@@ -2470,6 +2471,7 @@ def get_transaction_law_by_subdomain(request: Request) -> Response:
         info = get_business_stripe_info(business_profile, include_representative=True)
         result['support_email'] = info.get('support_email') or ''
         result['representative_name'] = info.get('representative_name') or ''
+        result['support_phone'] = info.get('support_phone') or info.get('account_phone') or ''
 
         # 住所は『〒xxx-xxxx\n住所本文』形式で返るため、HTML 表示用に改行を <br /> へ変換
         address_lines = [
