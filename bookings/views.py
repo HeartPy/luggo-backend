@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.request import Request
 from django.db.models import Q, QuerySet
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.conf import settings
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -19,7 +19,7 @@ import time
 
 from project.utils import mask_sensitive_id
 from business_owners.models import BusinessProfile
-from .models import LuggageBooking
+from .models import LuggageBooking, PendingBooking
 from .owner_views import _refund_booking_payment
 from .serializers import LuggageBookingSerializer, LuggageBookingCreateSerializer
 from .emails import (
@@ -485,6 +485,119 @@ def location_suggestions(request: Request) -> Response:
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+LUGGAGE_ITEM_KEYS = ('cabin', 'checked', 'oversize')
+
+# 予約作成に必要な顧客・集荷・配送フィールド
+# （payment_intent_id・合計金額・荷物個数・事業者・発行者スナップショットを除く）
+_BOOKING_PAYLOAD_FIELDS = (
+    'pickup_location_name',
+    'pickup_location_address',
+    'pickup_date',
+    'delivery_location_name',
+    'delivery_location_address',
+    'delivery_date',
+    'notes',
+    'customer_email',
+    'customer_name',
+    'customer_phone_number',
+    'customer_nationality',
+    'guest_name',
+)
+
+_BOOKING_DATE_FIELDS = ('pickup_date', 'delivery_date')
+
+
+def normalize_luggage_counts(source: dict[str, Any]) -> tuple[dict[str, int], int]:
+    """荷物種別ごとの個数を正規化し、(各荷物の個数, 合計個数) を返す"""
+    counts: dict[str, int] = {}
+    total = 0
+    for key in LUGGAGE_ITEM_KEYS:
+        raw = source.get(key, 0)
+        try:
+            value = int(raw)
+        except (ValueError, TypeError):
+            value = 0
+        if value < 0:
+            value = 0
+        counts[key] = value
+        total += value
+    return counts, total
+
+
+def materialize_booking(
+    *,
+    payment_intent_id: str,
+    business_profile: BusinessProfile,
+    total_amount: int,
+    booking_fields: dict[str, Any],
+    luggage_counts: dict[str, int],
+) -> tuple[LuggageBooking, bool]:
+    """
+    予約レコードを冪等に作成する。
+
+    payment_intent_id の一意制約により、フロントの予約作成POSTと Webhook
+    フォールバックが競合しても二重作成されない。既に存在する場合は既存を返す。
+    """
+    existing = LuggageBooking.objects.filter(payment_intent_id=payment_intent_id).first()
+    if existing:
+        return existing, False
+
+    issuer_snapshot = build_issuer_snapshot(business_profile)
+    try:
+        # create 部分だけ別トランザクションにし、競合時の IntegrityError をここで安全に処理
+        with transaction.atomic():
+            booking = LuggageBooking.objects.create(
+                payment_intent_id=payment_intent_id,
+                business_owner=business_profile,
+                luggage_items=luggage_counts,
+                total_amount=total_amount,
+                issuer_name=issuer_snapshot["issuer_name"],
+                issuer_address=issuer_snapshot["issuer_address"],
+                issuer_email=issuer_snapshot["issuer_email"],
+                issuer_phone=issuer_snapshot["issuer_phone"],
+                issuer_invoice_number=issuer_snapshot["issuer_invoice_number"],
+                issuer_snapshot_at=timezone.now(),
+                **booking_fields,
+            )
+        return booking, True
+    except IntegrityError:
+        # 競合により他方（フロント/Webhook）が先に作成済み。既存を取得して返す。
+        existing = LuggageBooking.objects.filter(payment_intent_id=payment_intent_id).first()
+        if existing:
+            return existing, False
+        raise
+
+
+def _mark_pending_booking_consumed(payment_intent_id: str) -> None:
+    """フォールバック用 PendingBooking を消費済みにする"""
+    try:
+        PendingBooking.objects.filter(
+            payment_intent_id=payment_intent_id,
+            consumed_at__isnull=True,
+        ).update(consumed_at=timezone.now())
+    except Exception:
+        logger.warning(
+            "PendingBooking の消費済み更新に失敗: payment_intent_id=%s",
+            mask_sensitive_id(payment_intent_id),
+        )
+
+
+def _booking_fields_from_payload(payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """PendingBooking.payload から予約作成用のフィールド辞書を組み立て"""
+    fields: dict[str, Any] = {}
+    for key in _BOOKING_PAYLOAD_FIELDS:
+        value = payload.get(key)
+        if key in _BOOKING_DATE_FIELDS:
+            if not value:
+                return None
+            try:
+                fields[key] = date_type.fromisoformat(str(value))
+            except (ValueError, TypeError):
+                return None
+        else:
+            fields[key] = value if value is not None else ''
+    return fields
+
 
 class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg]
     """予約作成"""
@@ -625,30 +738,13 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
                     )
 
                 # 荷物情報の検証（最低1点以上の荷物が必要）
-                LUGGAGE_ITEM_KEYS = ['cabin', 'checked', 'oversize']
-
-                luggage_counts = {}
-                total_items = 0
+                luggage_source: dict[str, Any] = {}
                 for key in LUGGAGE_ITEM_KEYS:
-                    count = luggage_items.get(key, request.data.get(key, 0))
-
-                    if isinstance(count, str):
-                        try:
-                            count = int(count)
-                            if count < 0:
-                                count = 0
-                        except ValueError:
-                            count = 0
-
-                    elif isinstance(count, (int, float)):
-                        count = int(count)
-                        if count < 0:
-                            count = 0
+                    if isinstance(luggage_items, dict) and key in luggage_items:
+                        luggage_source[key] = luggage_items[key]
                     else:
-                        count = 0
-
-                    luggage_counts[key] = count
-                    total_items += count
+                        luggage_source[key] = request.data.get(key, 0)
+                luggage_counts, total_items = normalize_luggage_counts(luggage_source)
 
                 # 最低1点以上の荷物が必要
                 if total_items < 1:
@@ -657,56 +753,58 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-                # 発行者情報のスナップショット。
-                # このタイミングで発行者名・住所・連絡先を確定させ、予約に保存する。
-                # これにより後日のアカウント変更・API 障害時にも領収書を発行できる。
-                issuer_snapshot = build_issuer_snapshot(business_profile)
+                # 予約作成用フィールドを検証済みデータから取得
+                validated = dict(serializer.validated_data)
+                validated.pop('payment_intent_id', None)
+                booking_fields = {
+                    key: validated.get(key, '')
+                    for key in _BOOKING_PAYLOAD_FIELDS
+                }
 
-                # 予約を保存（事業者・荷物情報・金額・発行者スナップショットを含める）
+                # 予約を冪等に作成する（フロント/Webhook が競合しても二重作成しない）
                 try:
-                    booking = serializer.save(
-                        business_owner=business_profile,
-                        luggage_items=luggage_counts,
+                    booking, created = materialize_booking(
+                        payment_intent_id=payment_intent_id,
+                        business_profile=business_profile,
                         total_amount=total_amount,
-                        issuer_name=issuer_snapshot["issuer_name"],
-                        issuer_address=issuer_snapshot["issuer_address"],
-                        issuer_email=issuer_snapshot["issuer_email"],
-                        issuer_phone=issuer_snapshot["issuer_phone"],
-                        issuer_invoice_number=issuer_snapshot["issuer_invoice_number"],
-                        issuer_snapshot_at=timezone.now(),
+                        booking_fields=booking_fields,
+                        luggage_counts=luggage_counts,
                     )
-
-                    logger.info(
-                        f"予約作成成功: booking_id={booking.id}, "
-                        f"business_owner_id={business_profile.id}, "
-                        f"payment_intent_id={mask_sensitive_id(payment_intent_id)}"
-                    )
-
-                    # 予約確認メールはトランザクション確定後に送信
-                    transaction.on_commit(
-                        lambda: send_booking_confirmation_email(booking)
-                    )
-
-                    # レスポンス返却用: 作成後に生成されたID、予約番号を含む完全な予約情報をシリアライズ
-                    response_serializer = LuggageBookingSerializer(booking)
-
-                    return Response(
-                        {
-                    'message': '予約が正常に作成されました。',
-                    'booking': response_serializer.data
-                },
-                status=status.HTTP_201_CREATED
-            )
-
                 except Exception as save_error:
-                    # 予約保存に失敗した場合
+                    # 予約保存に失敗した場合（トランザクションはロールバックされる）
                     logger.error(
                         f"予約保存エラー: payment_intent_id={mask_sensitive_id(payment_intent_id)}, "
                         f"error={str(save_error)}",
                         exc_info=True
                     )
-                    # トランザクションがロールバックされる
                     raise
+
+                # フォールバック用の PendingBooking を消費済みにする
+                _mark_pending_booking_consumed(payment_intent_id)
+
+                if created:
+                    logger.info(
+                        f"予約作成成功: booking_id={booking.id}, "
+                        f"business_owner_id={business_profile.id}, "
+                        f"payment_intent_id={mask_sensitive_id(payment_intent_id)}"
+                    )
+                    # 予約確認メールはトランザクション確定後に送信（新規作成時のみ）
+                    transaction.on_commit(
+                        lambda: send_booking_confirmation_email(booking)
+                    )
+
+                # レスポンス返却用: ID・予約番号を含む完全な予約情報をシリアライズ
+                response_serializer = LuggageBookingSerializer(booking)
+                return Response(
+                    {
+                        'message': (
+                            '予約が正常に作成されました。' if created
+                            else '予約は既に作成されています。'
+                        ),
+                        'booking': response_serializer.data,
+                    },
+                    status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+                )
 
         except Exception as e:
             # 予期しないエラー
@@ -1279,6 +1377,31 @@ def create_payment_intent(request: Request) -> Response:
         # Payment Intentを作成
         payment_intent = stripe.PaymentIntent.create(**payment_intent_params)
 
+        # 決済成功後の予約作成フォールバック用に、検証済みの予約情報を保存する。
+        # フロントの予約作成POSTが失敗・未実行でも、Webhook がこのデータから予約を作成できる。
+        # 顧客の個人情報を Stripe metadata に載せないよう、専用テーブルへ保持する。
+        try:
+            pending_payload: dict[str, Any] = {
+                key: request.data.get(key, '')
+                for key in _BOOKING_PAYLOAD_FIELDS
+            }
+            pending_payload['luggage_items'] = luggage_counts
+            PendingBooking.objects.update_or_create(
+                payment_intent_id=payment_intent.id,
+                defaults={
+                    'business_owner': business_profile,
+                    'payload': pending_payload,
+                    'total_amount': amount_in_yen,
+                    'consumed_at': None,
+                },
+            )
+        except Exception:
+            # フォールバック情報の保存失敗は決済フローを止めない（通常の予約POSTは別途成立しうる）
+            logger.warning(
+                "PendingBooking の保存に失敗: payment_intent_id=%s",
+                mask_sensitive_id(payment_intent.id),
+            )
+
         return Response(
             {
                 'client_secret': payment_intent.client_secret,
@@ -1374,6 +1497,75 @@ def _notify_unmatched_payment(payment_intent: Any) -> bool:
     )
 
 
+def _try_create_booking_from_pending(payment_intent_id: str) -> Optional[LuggageBooking]:
+    """
+    Webhook フォールバック: PendingBooking から予約レコードを作成
+
+    決済は成功しているが予約レコードが無い場合に呼ぶ。
+    """
+    pending = PendingBooking.objects.filter(payment_intent_id=payment_intent_id).first()
+    if pending is None:
+        logger.error(
+            "Webhookフォールバック不能: PendingBooking が見つかりません payment_intent_id=%s",
+            mask_sensitive_id(payment_intent_id),
+        )
+        return None
+
+    business_profile = pending.business_owner
+    if business_profile is None:
+        logger.error(
+            "Webhookフォールバック不能: 事業者が特定できません payment_intent_id=%s",
+            mask_sensitive_id(payment_intent_id),
+        )
+        return None
+
+    payload = pending.payload or {}
+    booking_fields = _booking_fields_from_payload(payload)
+    if booking_fields is None:
+        logger.error(
+            "Webhookフォールバック不能: 予約データが不正です payment_intent_id=%s",
+            mask_sensitive_id(payment_intent_id),
+        )
+        return None
+
+    luggage_counts, total_items = normalize_luggage_counts(payload.get('luggage_items') or {})
+    if total_items < 1:
+        logger.error(
+            "Webhookフォールバック不能: 荷物個数が不正です payment_intent_id=%s",
+            mask_sensitive_id(payment_intent_id),
+        )
+        return None
+
+    try:
+        booking, created = materialize_booking(
+            payment_intent_id=payment_intent_id,
+            business_profile=business_profile,
+            total_amount=pending.total_amount,
+            booking_fields=booking_fields,
+            luggage_counts=luggage_counts,
+        )
+    except Exception:
+        logger.error(
+            "Webhookフォールバックの予約作成に失敗: payment_intent_id=%s",
+            mask_sensitive_id(payment_intent_id),
+            exc_info=True,
+        )
+        return None
+
+    _mark_pending_booking_consumed(payment_intent_id)
+
+    if created:
+        logger.info(
+            "Webhookフォールバックで予約を作成: booking_id=%s payment_intent_id=%s",
+            booking.id,
+            mask_sensitive_id(payment_intent_id),
+        )
+        # トランザクション外での呼び出しのため on_commit は即時実行される
+        transaction.on_commit(lambda: send_booking_confirmation_email(booking))
+
+    return booking
+
+
 @csrf_exempt
 @api_view(['POST'])
 @authentication_classes([])
@@ -1382,9 +1574,12 @@ def stripe_webhook(request: Request) -> Response:
     """
     Stripe Webhook 受信エンドポイント
 
-    payment_intent.succeeded を受け取り、対応する予約レコードが存在しない場合に
-    運営へメール通知する（決済は成功しているが予約保存に失敗、もしくは決済直後に
-    ユーザーが離脱したケースの検知）。
+    payment_intent.succeeded を受け取り、対応する予約レコードが存在しない場合に、
+    まず PendingBooking からの予約自動作成（フォールバック）を試みる。作成できない
+    場合のみ運営へメール通知する（決済成功済みだが予約データが復元できないケース）。
+
+    これにより、決済直後のユーザー離脱や予約POST失敗があっても、可能な限り予約を
+    自動復旧できる。
 
     PaymentIntent はプラットフォームアカウント上で destination charge として作成して
     いるため、本 Webhook はプラットフォームアカウントに対して設定する（連結アカウント
@@ -1428,7 +1623,11 @@ def stripe_webhook(request: Request) -> Response:
     if _booking_exists_with_grace(payment_intent_id, grace_seconds):
         return Response(status=status.HTTP_200_OK)
 
-    # 予約が見つからない = 決済成功済みだが予約未保存。運営へ通知する。
+    # 予約が無い = 決済成功済みだが予約未保存。まず保留データからの自動作成を試みる。
+    if _try_create_booking_from_pending(payment_intent_id) is not None:
+        return Response(status=status.HTTP_200_OK)
+
+    # フォールバック不能の場合のみ運営へ通知する。
     notified = _notify_unmatched_payment(payment_intent)
 
     # 通知に失敗した場合は 500 を返し、Stripe の自動再送で再試行させる

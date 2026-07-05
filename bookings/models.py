@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 from django.conf import settings
 from django.utils import timezone
 import uuid
@@ -166,6 +167,14 @@ class LuggageBooking(models.Model):
             models.Index(fields=['delivery_date']),
             models.Index(fields=['customer_name']),
         ]
+        constraints = [
+            # 同一決済（payment_intent_id）に対する予約の二重作成を DB レベルで防ぐ
+            models.UniqueConstraint(
+                fields=['payment_intent_id'],
+                condition=~Q(payment_intent_id=''),
+                name='uniq_booking_payment_intent_id',
+            ),
+        ]
 
     def __str__(self) -> str:
         return f'{self.booking_number} - {self.pickup_location_name} → {self.delivery_location_name}'
@@ -237,3 +246,58 @@ class LuggageBooking(models.Model):
         if self.pickup_date >= today:
             return (self.pickup_date - today).days
         return 0
+
+
+class PendingBooking(models.Model):
+    """
+    決済成功後に予約レコードを確実に作成するためのフォールバック用データ
+
+    create_payment_intent 時点で検証済みの予約情報をここへ保存しておく。
+    通常はフロントの予約作成POSTで LuggageBooking が作成されるが、
+    決済直後にユーザーが離脱した・通信エラー等で予約POSTが失敗した場合でも、
+    Stripe Webhook（payment_intent.succeeded）がこのデータから予約を作成できる。
+
+    顧客の個人情報を Stripe metadata に載せずに済むよう、別テーブルで保持する。
+    """
+
+    payment_intent_id = models.CharField(
+        max_length=255,
+        unique=True,
+        verbose_name='Stripe Payment Intent ID',
+    )
+    business_owner = models.ForeignKey(
+        'business_owners.BusinessProfile',
+        on_delete=models.CASCADE,
+        related_name='pending_bookings',
+        null=True,
+        blank=True,
+        verbose_name='事業者',
+    )
+    # 予約作成に必要なフィールド一式（集荷/配送先・日付・顧客情報・荷物個数など）。
+    # 検証済みの値のみを保存する。
+    payload = models.JSONField(
+        default=dict,
+        verbose_name='予約作成用データ',
+    )
+    total_amount = models.PositiveIntegerField(
+        default=0,
+        verbose_name='合計金額',
+    )
+    # LuggageBooking が作成された日時（通常 POST / Webhook どちらでも記録）。
+    # NULL = 未使用（フォールバック待ち）、日時あり = 予約作成済みで使用済み。
+    consumed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='予約作成完了日時',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日')
+
+    class Meta:
+        db_table = 'pending_bookings'
+        verbose_name = '保留中の予約（フォールバック用）'
+        verbose_name_plural = '保留中の予約（フォールバック用）'
+        ordering = ['-created_at']
+
+    def __str__(self) -> str:
+        return f'PendingBooking({self.payment_intent_id})'
