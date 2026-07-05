@@ -19,6 +19,7 @@ import time
 
 from project.utils import mask_sensitive_id
 from business_owners.models import BusinessProfile
+from business_owners.stripe_info import sync_stripe_review_status
 from .models import LuggageBooking, PendingBooking
 from .owner_views import _refund_booking_payment
 from .serializers import LuggageBookingSerializer, LuggageBookingCreateSerializer
@@ -1566,6 +1567,49 @@ def _try_create_booking_from_pending(payment_intent_id: str) -> Optional[Luggage
     return booking
 
 
+def _handle_account_updated(account: Any) -> Response:
+    """
+    Stripe account.updated を受け、事業者の Stripe 審査状態を DB へ同期
+
+    連結アカウント（事業者の Stripe Connect アカウント）の状態が変わるたびに送られる。
+    状態が変化した場合は同期処理内で事業者へメール通知。
+    """
+    account_id = account.get('id', '') if hasattr(account, 'get') else getattr(account, 'id', '')
+    account_id = account_id or ''
+
+    if not account_id:
+        logger.warning("Stripe Webhook(account.updated): account.id が空です")
+        return Response(status=status.HTTP_200_OK)
+
+    try:
+        profile = BusinessProfile.objects.get(stripe_account_id=account_id)
+    except BusinessProfile.DoesNotExist:
+        logger.info(
+            "Stripe Webhook(account.updated): 対応する事業者が見つかりません account_id=%s",
+            mask_sensitive_id(account_id),
+        )
+        return Response(status=status.HTTP_200_OK)
+    except BusinessProfile.MultipleObjectsReturned:
+        logger.error(
+            "Stripe Webhook(account.updated): 同一 account_id の事業者が複数存在します account_id=%s",
+            mask_sensitive_id(account_id),
+        )
+        return Response(status=status.HTTP_200_OK)
+
+    try:
+        sync_stripe_review_status(profile, account)
+    except Exception:
+        logger.error(
+            "Stripe Webhook(account.updated): 審査状態の同期に失敗しました account_id=%s",
+            mask_sensitive_id(account_id),
+            exc_info=True,
+        )
+        # 一時的な失敗の可能性があるため 500 を返し Stripe の再送に委ねる。
+        return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response(status=status.HTTP_200_OK)
+
+
 @csrf_exempt
 @api_view(['POST'])
 @authentication_classes([])
@@ -1582,8 +1626,7 @@ def stripe_webhook(request: Request) -> Response:
     自動復旧できる。
 
     PaymentIntent はプラットフォームアカウント上で destination charge として作成して
-    いるため、本 Webhook はプラットフォームアカウントに対して設定する（連結アカウント
-    側ではない）。
+    いるため、本 Webhook はプラットフォームアカウントに対して設定する。
     """
     webhook_secret = settings.STRIPE_WEBHOOK_SECRET
     if not webhook_secret:
@@ -1606,7 +1649,11 @@ def stripe_webhook(request: Request) -> Response:
 
     event_type = event.get('type')
 
-    # 関心があるのは決済成功イベントのみ。それ以外は 200 で受理して無視する。
+    # 連結アカウントの審査状態変更を DB に同期
+    if event_type == 'account.updated':
+        return _handle_account_updated(event['data']['object'])
+
+    # それ以外で関心があるのは決済成功イベントのみ。それ以外は 200 で受理して無視する。
     if event_type != 'payment_intent.succeeded':
         return Response(status=status.HTTP_200_OK)
 

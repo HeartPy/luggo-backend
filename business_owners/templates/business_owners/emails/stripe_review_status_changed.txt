@@ -1,0 +1,17 @@
+{{ rep_name }} 様
+
+いつもLugGo（ラグゴー）をご利用いただき、誠にありがとうございます。
+{{ company_name }} 様の決済アカウント（Stripe）の審査状態が更新されましたのでお知らせいたします。
+
+▼ 審査状態
+{{ old_status_label }} → {{ new_status_label }}
+
+{{ status_message }}
+
+ダッシュボードから最新の状態をご確認いただけます。
+
+{{ dashboard_url }}
+
+今後ともLugGo（ラグゴー）をよろしくお願いいたします。
+
+{{ signature }}

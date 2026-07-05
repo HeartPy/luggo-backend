@@ -63,6 +63,16 @@ class BusinessProfileManager(models.Manager):
         return super().get_queryset().filter(is_active=True)
 
 
+class StripeReviewStatus(models.TextChoices):
+    """Stripe Connect アカウントの審査状態（当サービス側で扱う集約ステータス）"""
+    UNKNOWN = 'unknown', '未取得'
+    INCOMPLETE = 'incomplete', '入力未完了'
+    PENDING = 'pending', '審査中'
+    RESTRICTED = 'restricted', '要対応'
+    ENABLED = 'enabled', '利用可能'
+    REJECTED = 'rejected', '利用不可'
+
+
 class BusinessProfile(models.Model):
     """事業者プロフィール"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -281,6 +291,43 @@ class BusinessProfile(models.Model):
         null=True,
         blank=True,
         verbose_name='Stripe事業者情報キャッシュ更新日時',
+    )
+
+    # Stripe Connect 審査状態（account.updated Webhook で同期）
+    stripe_review_status = models.CharField(
+        max_length=20,
+        choices=StripeReviewStatus.choices,
+        default=StripeReviewStatus.UNKNOWN,
+        verbose_name='Stripe審査状態',
+    )
+    stripe_charges_enabled = models.BooleanField(
+        default=False,
+        verbose_name='Stripe決済有効',
+    )
+    stripe_payouts_enabled = models.BooleanField(
+        default=False,
+        verbose_name='Stripe入金有効',
+    )
+    stripe_details_submitted = models.BooleanField(
+        default=False,
+        verbose_name='Stripe情報提出済み',
+    )
+    stripe_disabled_reason = models.CharField(
+        max_length=100,
+        blank=True,
+        default='',
+        verbose_name='Stripe無効化理由',
+    )
+    stripe_currently_due = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name='Stripe要対応項目',
+        help_text='requirements.currently_due + past_due の項目リスト',
+    )
+    stripe_review_status_updated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='Stripe審査状態更新日時',
     )
 
     # 予約フォームのURL
