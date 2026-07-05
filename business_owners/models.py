@@ -259,7 +259,14 @@ class BusinessProfile(models.Model):
     active = BusinessProfileManager()
 
     # Stripe Connect
-    stripe_account_id = models.CharField(max_length=255, blank=True, default="", verbose_name='StripeアカウントID')
+    stripe_account_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        default=None,
+        unique=True,
+        verbose_name='StripeアカウントID',
+    )
 
     # Stripe Connect アカウント由来の表示用情報のキャッシュ。
     # 領収書・特定商取引法に基づく表記・確認メールで発行者情報を表示する際、

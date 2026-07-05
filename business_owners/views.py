@@ -1011,7 +1011,7 @@ def custom_create_account(request: Request) -> Response:
 
             except stripe.error.StripeError as update_error:  # type: ignore[attr-defined]
                 # 更新処理でエラーが発生した場合、stripe_account_idをロールバック
-                business_profile.stripe_account_id = ''
+                business_profile.stripe_account_id = None
                 business_profile.save()
                 logger.error(
                     f"Stripeアカウント更新エラー（作成後）: account_id={mask_sensitive_id(account_id)}, "
@@ -1021,7 +1021,7 @@ def custom_create_account(request: Request) -> Response:
 
             except Exception as update_error:
                 # 更新処理でエラーが発生した場合、stripe_account_idをロールバック
-                business_profile.stripe_account_id = ''
+                business_profile.stripe_account_id = None
                 business_profile.save()
                 logger.error(
                     f"Stripeアカウント更新予期しないエラー（作成後）: account_id={mask_sensitive_id(account_id)}, "
@@ -2660,7 +2660,7 @@ def register_business_account(request: Request) -> Response:
             rep_last_name_kana=data['rep_last_name_kana'],
             rep_first_name_kana=data['rep_first_name_kana'],
             # Stripeアカウントは後で管理画面から作成
-            stripe_account_id='',
+            stripe_account_id=None,
             # 登録フォームで利用規約・プライバシーポリシーへの同意を取っているため、
             # 現行バージョンへの同意を初期値として記録
             terms_agreed_version=TERMS_VERSION,
