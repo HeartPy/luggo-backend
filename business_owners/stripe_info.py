@@ -176,6 +176,154 @@ def _update_cache(
             )
 
 
+def derive_stripe_review_status(account: Any) -> str:
+    """Stripe Account を LugGo の審査ステータス（1つ）に変換"""
+    # 循環参照を避けるため関数内で import する
+    from .models import StripeReviewStatus
+
+    def _get(obj: Any, key: str, default: Any = None) -> Any:
+        if obj is None:
+            return default
+        if hasattr(obj, "get"):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    details_submitted = bool(_get(account, "details_submitted", False))
+    charges_enabled = bool(_get(account, "charges_enabled", False))
+    payouts_enabled = bool(_get(account, "payouts_enabled", False))
+
+    requirements = _get(account, "requirements") or {}
+    currently_due = list(_get(requirements, "currently_due", []) or [])
+    past_due = list(_get(requirements, "past_due", []) or [])
+    disabled_reason = _get(requirements, "disabled_reason") or ""
+
+    # Stripe に却下された（不正・利用規約違反など）場合は最優先で利用不可扱い
+    if isinstance(disabled_reason, str) and disabled_reason.startswith("rejected"):
+        return StripeReviewStatus.REJECTED
+
+    # まだ決済アカウント登録フォームへの入力が完了していない
+    if not details_submitted:
+        return StripeReviewStatus.INCOMPLETE
+
+    # 決済・入金ともに有効で、対応が必要な要件も残っていない = 審査通過
+    if charges_enabled and payouts_enabled and not currently_due and not past_due:
+        return StripeReviewStatus.ENABLED
+
+    # 事業者側の追加対応（書類再提出・情報入力）が必要
+    if currently_due or past_due:
+        return StripeReviewStatus.RESTRICTED
+
+    # 情報提出済み・未対応要件なしだが未有効 = Stripe 側で審査中
+    return StripeReviewStatus.PENDING
+
+
+def _requirements_due_list(account: Any) -> list[str]:
+    """requirements.currently_due と past_due を結合した重複がないリストを返す"""
+    requirements = account.get("requirements") if hasattr(account, "get") else getattr(
+        account, "requirements", None
+    )
+    requirements = requirements or {}
+
+    def _due(key: str) -> list[str]:
+        if hasattr(requirements, "get"):
+            return list(requirements.get(key, []) or [])
+        return list(getattr(requirements, key, []) or [])
+
+    combined = _due("currently_due") + _due("past_due")
+    # 順序を保ちつつ重複を除去
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in combined:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def sync_stripe_review_status(
+    profile: "BusinessProfile",
+    account: Any,
+    *,
+    notify: bool = True,
+) -> bool:
+    """
+    Stripe Account の審査状態を BusinessProfile へ同期
+
+    審査状態が変化した場合、notify=True なら事業者へメール通知
+    """
+    from .models import StripeReviewStatus
+
+    new_status = derive_stripe_review_status(account)
+    old_status = profile.stripe_review_status or StripeReviewStatus.UNKNOWN
+
+    disabled_reason = ""
+    requirements = account.get("requirements") if hasattr(account, "get") else getattr(
+        account, "requirements", None
+    )
+    if requirements:
+        raw_reason = (
+            requirements.get("disabled_reason")
+            if hasattr(requirements, "get")
+            else getattr(requirements, "disabled_reason", None)
+        )
+        disabled_reason = raw_reason or ""
+
+    def _flag(key: str) -> bool:
+        if hasattr(account, "get"):
+            return bool(account.get(key, False))
+        return bool(getattr(account, key, False))
+
+    profile.stripe_review_status = new_status
+    profile.stripe_charges_enabled = _flag("charges_enabled")
+    profile.stripe_payouts_enabled = _flag("payouts_enabled")
+    profile.stripe_details_submitted = _flag("details_submitted")
+    profile.stripe_disabled_reason = disabled_reason[:100]
+    profile.stripe_currently_due = _requirements_due_list(account)
+    profile.stripe_review_status_updated_at = timezone.now()
+
+    update_fields = [
+        "stripe_review_status",
+        "stripe_charges_enabled",
+        "stripe_payouts_enabled",
+        "stripe_details_submitted",
+        "stripe_disabled_reason",
+        "stripe_currently_due",
+        "stripe_review_status_updated_at",
+        "updated_at",
+    ]
+    try:
+        profile.save(update_fields=update_fields)
+    except Exception:
+        logger.warning(
+            "Stripe審査状態の保存に失敗しました: profile_id=%s",
+            getattr(profile, "id", None),
+        )
+        return False
+
+    status_changed = old_status != new_status
+    if status_changed:
+        logger.info(
+            "Stripe審査状態が変化しました: profile_id=%s %s -> %s",
+            getattr(profile, "id", None),
+            old_status,
+            new_status,
+        )
+        if notify and new_status != StripeReviewStatus.INCOMPLETE:
+            # 循環 import を避けるため遅延 import
+            from .utils import send_stripe_review_status_email
+
+            try:
+                send_stripe_review_status_email(profile, old_status, new_status)
+            except Exception:
+                logger.warning(
+                    "Stripe審査状態変更メールの送信に失敗しました: profile_id=%s",
+                    getattr(profile, "id", None),
+                    exc_info=True,
+                )
+
+    return status_changed
+
+
 def get_business_stripe_info(
     profile: "BusinessProfile",
     *,

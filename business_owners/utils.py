@@ -170,3 +170,62 @@ def send_registration_completed_emails(profile: "BusinessProfile") -> None:
     """
     send_registration_completed_email_to_owner(profile)
     send_registration_completed_email_to_operations(profile)
+
+
+# Stripe 審査状態ごとの、事業者向けメールに表示する日本語ラベルと説明文
+_STRIPE_REVIEW_STATUS_LABELS: dict[str, str] = {
+    "unknown": "未取得",
+    "incomplete": "入力未完了",
+    "pending": "審査中",
+    "restricted": "要対応",
+    "enabled": "利用可能",
+    "rejected": "利用不可",
+}
+
+_STRIPE_REVIEW_STATUS_MESSAGES: dict[str, str] = {
+    "pending": (
+        "決済アカウントの審査が開始されました。\n"
+        "審査完了までしばらくお待ちください。結果は改めてメールでお知らせします。"
+    ),
+    "restricted": (
+        "決済アカウントの審査を進めるために、追加のご対応が必要です。\n"
+        "ダッシュボードから不足している情報・書類をご確認のうえ、ご提出ください。"
+    ),
+    "enabled": (
+        "決済アカウントの審査が完了し、ご利用いただけるようになりました。\n"
+        "予約の受付・決済が可能です。"
+    ),
+    "rejected": (
+        "決済アカウントがご利用いただけない状態になりました。\n"
+        "お手数ですが、詳細については運営事務局までお問い合わせください。"
+    ),
+}
+
+
+def send_stripe_review_status_email(
+    profile: "BusinessProfile", old_status: str, new_status: str
+) -> bool:
+    """Stripe 審査状態が変化した際に、事業者本人へ通知メールを送信"""
+    user = profile.user
+    to_email = getattr(user, "email", "") or profile.company_email
+    if not to_email:
+        logger.error(
+            "宛先メールアドレスが無いため Stripe 審査状態通知を送信できません: profile_id=%s",
+            profile.id,
+        )
+        return False
+
+    context = {
+        "company_name": profile.company_name,
+        "rep_name": (
+            f"{profile.rep_last_name_kanji} {profile.rep_first_name_kanji}".strip()
+        ),
+        "old_status_label": _STRIPE_REVIEW_STATUS_LABELS.get(old_status, old_status),
+        "new_status_label": _STRIPE_REVIEW_STATUS_LABELS.get(new_status, new_status),
+        "status_message": _STRIPE_REVIEW_STATUS_MESSAGES.get(new_status, ""),
+        "dashboard_url": f"{settings.FRONTEND_BASE_URL}/business-owner/dashboard",
+        "signature": email_signature(),
+    }
+
+    subject, text = _render_email("stripe_review_status_changed", context)
+    return send_email(subject=subject, text=text, to=to_email)
