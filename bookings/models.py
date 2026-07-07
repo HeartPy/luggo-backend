@@ -301,3 +301,94 @@ class PendingBooking(models.Model):
 
     def __str__(self) -> str:
         return f'PendingBooking({self.payment_intent_id})'
+
+
+class ChargeDispute(models.Model):
+    """Stripe のチャージバック（異議申立て / dispute）の記録"""
+
+    dispute_id = models.CharField(
+        max_length=255,
+        unique=True,
+        verbose_name='Stripe 異議申立て ID',
+    )
+    charge_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='Stripe Charge ID',
+    )
+    payment_intent_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        db_index=True,
+        verbose_name='Stripe Payment Intent ID',
+    )
+    booking = models.ForeignKey(
+        'LuggageBooking',
+        on_delete=models.SET_NULL,
+        related_name='disputes',
+        null=True,
+        blank=True,
+        verbose_name='対応する予約',
+    )
+    business_owner = models.ForeignKey(
+        'business_owners.BusinessProfile',
+        on_delete=models.SET_NULL,
+        related_name='disputes',
+        null=True,
+        blank=True,
+        verbose_name='事業者',
+    )
+    amount = models.PositiveIntegerField(
+        default=0,
+        verbose_name='異議申立て金額',
+    )
+    currency = models.CharField(
+        max_length=10,
+        blank=True,
+        default='',
+        verbose_name='通貨',
+    )
+    reason = models.CharField(
+        max_length=100,
+        blank=True,
+        default='',
+        verbose_name='理由',
+    )
+    status = models.CharField(
+        max_length=50,
+        blank=True,
+        default='',
+        verbose_name='ステータス',
+    )
+    is_charge_refundable = models.BooleanField(
+        default=False,
+        verbose_name='チャージ返金可否',
+    )
+    evidence_due_by = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='証拠提出期限',
+    )
+    opened_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='異議申立て発生日時',
+    )
+    closed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='クローズ日時',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日')
+
+    class Meta:
+        db_table = 'charge_disputes'
+        verbose_name = 'チャージバック（異議申立て）'
+        verbose_name_plural = 'チャージバック（異議申立て）'
+        ordering = ['-created_at']
+
+    def __str__(self) -> str:
+        return f'ChargeDispute({self.dispute_id}, status={self.status})'

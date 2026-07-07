@@ -3,6 +3,7 @@ from django.http import HttpRequest
 from django.db.models import QuerySet
 from django.utils import timezone
 from business_owners.models import BusinessProfile
+from bookings.models import ChargeDispute
 
 
 @admin.register(BusinessProfile)
@@ -94,6 +95,60 @@ class BusinessProfileAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # djang
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[BusinessProfile]:
         return super().get_queryset(request).select_related('user')
+
+
+@admin.register(ChargeDispute)
+class ChargeDisputeAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubsではModelAdminがジェネリック扱いだが、実行時は非ジェネリックのため
+    list_display = [
+        'dispute_id',
+        'status',
+        'reason',
+        'amount',
+        'currency',
+        'booking',
+        'business_owner',
+        'opened_at',
+        'closed_at',
+        'created_at',
+    ]
+    search_fields = [
+        'dispute_id',
+        'charge_id',
+        'payment_intent_id',
+    ]
+    list_filter = [
+        'status',
+        'reason',
+        'is_charge_refundable',
+        'created_at',
+        'closed_at',
+    ]
+    readonly_fields = [
+        'dispute_id',
+        'charge_id',
+        'payment_intent_id',
+        'booking',
+        'business_owner',
+        'amount',
+        'currency',
+        'reason',
+        'status',
+        'is_charge_refundable',
+        'evidence_due_by',
+        'opened_at',
+        'closed_at',
+        'created_at',
+        'updated_at',
+    ]
+    ordering = ['-created_at']
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        # 記録は Stripe Webhook 経由でのみ作成する
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj=None) -> bool:
+        # Stripe Webhook で作られた記録なので、手動削除はさせない
+        return False
 
 
 admin.site.site_header = 'LugGo 管理画面'
