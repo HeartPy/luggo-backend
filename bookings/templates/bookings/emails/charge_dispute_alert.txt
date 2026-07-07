@@ -1,0 +1,28 @@
+LugGo 運営の皆さまへ
+
+{% if is_closed %}Stripe 上でチャージバック（異議申立て）がクローズされました。
+下記の結果をご確認ください。「敗訴」の場合は該当金額が引き落とされています。{% else %}Stripe 上でチャージバック（異議申立て）が発生しました。
+カード会社経由で顧客が支払いに異議を申し立てています。証拠提出期限までに
+Stripe ダッシュボードで対応（証拠の提出または受け入れ）が必要な場合があります。{% endif %}
+
+----------------------------------------
+異議申立て ID   : {{ dispute_id }}
+ステータス       : {{ status_display }}
+理由             : {{ reason_display }}
+金額             : {{ amount_display }}
+証拠提出期限     : {{ evidence_due_iso }}
+発生日時         : {{ opened_iso }}
+チャージ返金可否 : {% if is_charge_refundable %}可能{% else %}不可{% endif %}
+----------------------------------------
+予約番号         : {{ booking_number }}
+顧客名           : {{ customer_name }}
+事業者           : {{ business_name }}
+PaymentIntent ID : {{ payment_intent_id }}
+Charge ID        : {{ charge_id }}
+----------------------------------------
+
+Stripe ダッシュボードで確認・対応:
+{{ dashboard_url }}
+
+このメールは Stripe の charge.dispute.created / charge.dispute.closed Webhook を
+受信した際に自動送信されています。

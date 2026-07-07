@@ -342,3 +342,121 @@ def send_unmatched_payment_alert(
         return False
 
     return send_email(subject=subject, text=text, to=recipients, html=html)
+
+
+# Stripe の dispute.reason と日本語表示の対応
+DISPUTE_REASON_LABELS: dict[str, str] = {
+    "bank_cannot_process": "銀行が処理できない",
+    "check_returned": "小切手の返却",
+    "credit_not_processed": "クレジットが処理されていない",
+    "customer_initiated": "顧客都合による申立て",
+    "debit_not_authorized": "デビットが承認されていない",
+    "duplicate": "二重請求",
+    "fraudulent": "不正利用の疑い",
+    "general": "その他（一般）",
+    "incorrect_account_details": "口座情報の誤り",
+    "insufficient_funds": "残高不足",
+    "product_not_received": "商品・サービスの未受領",
+    "product_unacceptable": "商品・サービスへの不満",
+    "subscription_canceled": "サブスクリプションの解約",
+    "unrecognized": "身に覚えのない請求",
+}
+
+# Stripe の dispute.status と日本語表示の対応
+DISPUTE_STATUS_LABELS: dict[str, str] = {
+    "warning_needs_response": "警告：要対応",
+    "warning_under_review": "警告：審査中",
+    "warning_closed": "警告：クローズ",
+    "needs_response": "要対応（証拠提出が必要）",
+    "under_review": "審査中",
+    "won": "勝訴（資金は返還されません）",
+    "lost": "敗訴（資金が引き落とされました）",
+    "charge_refunded": "返金済み",
+}
+
+
+def _dispute_reason_label(reason: Optional[str]) -> str:
+    """dispute.reason を日本語表示に変換（未知の値はそのまま返す）"""
+    if not reason:
+        return "-"
+    return DISPUTE_REASON_LABELS.get(reason, reason)
+
+
+def _dispute_status_label(status_value: Optional[str]) -> str:
+    """dispute.status を日本語表示に変換（未知の値はそのまま返す）"""
+    if not status_value:
+        return "-"
+    return DISPUTE_STATUS_LABELS.get(status_value, status_value)
+
+
+def send_charge_dispute_alert(
+    *,
+    event_type: str,
+    dispute_id: str,
+    payment_intent_id: Optional[str] = None,
+    charge_id: Optional[str] = None,
+    amount: Optional[int] = None,
+    currency: Optional[str] = None,
+    reason: Optional[str] = None,
+    status_value: Optional[str] = None,
+    is_charge_refundable: Optional[bool] = None,
+    evidence_due_iso: Optional[str] = None,
+    opened_iso: Optional[str] = None,
+    booking_number: Optional[str] = None,
+    customer_name: Optional[str] = None,
+    business_name: Optional[str] = None,
+) -> bool:
+    """
+    チャージバック（異議申立て）の発生・クローズを運営へ通知
+
+    charge.dispute.created / charge.dispute.closed のいずれでも呼ばれる。
+    証拠提出期限や対応する予約・事業者を本文に含め、運営が対応要否を判断できるようにする。
+    """
+    recipients = operations_recipients()
+    if not recipients:
+        logger.error(
+            "OPERATIONS_NOTIFICATION_EMAIL が未設定のためチャージバック通知を送信できません: "
+            "dispute_id=%s",
+            mask_sensitive_id(dispute_id),
+        )
+        return False
+
+    is_closed = event_type == "charge.dispute.closed"
+
+    if isinstance(amount, int):
+        currency_code = (currency or "").upper()
+        # JPY は最小単位＝円のため係数変換しない。それ以外は 100 で割って表示。
+        if (currency or "").lower() == "jpy" or not currency:
+            amount_display = f"¥{amount:,}"
+        else:
+            amount_display = f"{amount / 100:,.2f} {currency_code}"
+    else:
+        amount_display = "-"
+
+    context = {
+        "is_closed": is_closed,
+        "dispute_id": dispute_id,
+        "payment_intent_id": payment_intent_id or "-",
+        "charge_id": charge_id or "-",
+        "amount_display": amount_display,
+        "reason_display": _dispute_reason_label(reason),
+        "status_display": _dispute_status_label(status_value),
+        "is_charge_refundable": bool(is_charge_refundable),
+        "evidence_due_iso": evidence_due_iso or "-",
+        "opened_iso": opened_iso or "-",
+        "booking_number": booking_number or "-",
+        "customer_name": customer_name or "-",
+        "business_name": business_name or "-",
+        "dashboard_url": f"https://dashboard.stripe.com/disputes/{dispute_id}",
+    }
+
+    try:
+        subject, text, html = _render_email("charge_dispute_alert", context)
+    except Exception:
+        logger.exception(
+            "チャージバック通知の組み立てに失敗しました: dispute_id=%s",
+            mask_sensitive_id(dispute_id),
+        )
+        return False
+
+    return send_email(subject=subject, text=text, to=recipients, html=html)

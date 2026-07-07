@@ -20,20 +20,21 @@ import time
 from project.utils import mask_sensitive_id
 from business_owners.models import BusinessProfile
 from business_owners.stripe_info import sync_stripe_review_status
-from .models import LuggageBooking, PendingBooking
+from .models import LuggageBooking, PendingBooking, ChargeDispute
 from .owner_views import _refund_booking_payment
 from .serializers import LuggageBookingSerializer, LuggageBookingCreateSerializer
 from .emails import (
     build_issuer_snapshot,
     send_booking_cancellation_emails,
     send_booking_confirmation_email,
+    send_charge_dispute_alert,
     send_unmatched_payment_alert,
 )
 from .receipts import build_receipt_pdf, receipt_filename
 
+
 stripe.api_key = settings.STRIPE_SECRET_KEY
 logger = logging.getLogger(__name__)
-
 
 # 都道府県名とコードのマッピング
 _PREF_MAP: dict[str, str] = {
@@ -1610,6 +1611,141 @@ def _handle_account_updated(account: Any) -> Response:
     return Response(status=status.HTTP_200_OK)
 
 
+def _stripe_ts_to_datetime(value: Any) -> Optional[dt_datetime]:
+    """Stripe の Unix タイムスタンプをタイムゾーン付きの datetime に変換"""
+    if not value:
+        return None
+    try:
+        return dt_datetime.fromtimestamp(int(value), tz=dt_timezone.utc)
+    except (ValueError, TypeError, OSError):
+        return None
+
+
+def _datetime_to_local_display(value: Optional[dt_datetime]) -> Optional[str]:
+    """datetime を現地時刻の「YYYY年MM月DD日 HH:MM」形式の文字列に変換"""
+    if value is None:
+        return None
+    try:
+        return timezone.localtime(value).strftime("%Y年%m月%d日 %H:%M")
+    except (ValueError, OSError):
+        return None
+
+
+def _handle_charge_dispute(event: Any) -> Response:
+    """
+    Stripe charge.dispute.created / charge.dispute.closed を受け、
+    チャージバック（異議申立て）を DB に記録し、運営へメール通知
+    """
+    event_type = event.get('type') or ''
+    dispute = event['data']['object']
+
+    def _field(key: str) -> Any:
+        return dispute.get(key) if hasattr(dispute, 'get') else getattr(dispute, key, None)
+
+    dispute_id = _field('id') or ''
+    if not dispute_id:
+        logger.warning("Stripe Webhook(%s): dispute.id が空です", event_type)
+        return Response(status=status.HTTP_200_OK)
+
+    charge_id = _field('charge') or ''
+
+    payment_intent_raw = _field('payment_intent')
+    if isinstance(payment_intent_raw, str):
+        payment_intent_id = payment_intent_raw
+    elif payment_intent_raw and hasattr(payment_intent_raw, 'get'):
+        payment_intent_id = payment_intent_raw.get('id', '') or ''
+    else:
+        payment_intent_id = getattr(payment_intent_raw, 'id', '') or ''
+
+    amount = _field('amount')
+    currency = _field('currency') or ''
+    reason = _field('reason') or ''
+    dispute_status = _field('status') or ''
+    is_charge_refundable = bool(_field('is_charge_refundable'))
+
+    evidence_details = _field('evidence_details') or {}
+    due_by_ts = (
+        evidence_details.get('due_by') if hasattr(evidence_details, 'get') else None
+    )
+    evidence_due_by = _stripe_ts_to_datetime(due_by_ts)
+
+    opened_at = _stripe_ts_to_datetime(_field('created'))
+    is_closed = event_type == 'charge.dispute.closed'
+    closed_at = _stripe_ts_to_datetime(event.get('created')) if is_closed else None
+
+    # payment_intent から対応する予約・事業者を逆引きする
+    booking: Optional[LuggageBooking] = None
+    if payment_intent_id:
+        booking = LuggageBooking.objects.filter(
+            payment_intent_id=payment_intent_id
+        ).first()
+    business_profile = booking.business_owner if booking else None
+
+    defaults: dict[str, Any] = {
+        'charge_id': charge_id,
+        'payment_intent_id': payment_intent_id,
+        'booking': booking,
+        'business_owner': business_profile,
+        'amount': amount if isinstance(amount, int) and amount >= 0 else 0,
+        'currency': currency,
+        'reason': reason,
+        'status': dispute_status,
+        'is_charge_refundable': is_charge_refundable,
+        'evidence_due_by': evidence_due_by,
+    }
+    if opened_at is not None:
+        defaults['opened_at'] = opened_at
+    if closed_at is not None:
+        defaults['closed_at'] = closed_at
+
+    try:
+        _, created = ChargeDispute.objects.update_or_create(
+            dispute_id=dispute_id,
+            defaults=defaults,
+        )
+    except Exception:
+        logger.error(
+            "Stripe Webhook(%s): 異議申立ての記録に失敗しました dispute_id=%s",
+            event_type,
+            mask_sensitive_id(dispute_id),
+            exc_info=True,
+        )
+        return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    logger.warning(
+        "Stripe Webhook(%s): チャージバックを記録しました dispute_id=%s status=%s "
+        "payment_intent_id=%s new=%s",
+        event_type,
+        mask_sensitive_id(dispute_id),
+        dispute_status,
+        mask_sensitive_id(payment_intent_id) if payment_intent_id else '-',
+        created,
+    )
+
+    notified = send_charge_dispute_alert(
+        event_type=event_type,
+        dispute_id=dispute_id,
+        payment_intent_id=payment_intent_id,
+        charge_id=charge_id,
+        amount=amount if isinstance(amount, int) else None,
+        currency=currency,
+        reason=reason,
+        status_value=dispute_status,
+        is_charge_refundable=is_charge_refundable,
+        evidence_due_iso=_datetime_to_local_display(evidence_due_by),
+        opened_iso=_datetime_to_local_display(opened_at),
+        booking_number=booking.booking_number if booking else None,
+        customer_name=booking.customer_name if booking else None,
+        business_name=business_profile.company_name if business_profile else None,
+    )
+
+    # 記録は成功しているが通知に失敗した場合は 500 を返し、Stripe の再送に委ねる
+    if not notified:
+        return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response(status=status.HTTP_200_OK)
+
+
 @csrf_exempt
 @api_view(['POST'])
 @authentication_classes([])
@@ -1624,6 +1760,10 @@ def stripe_webhook(request: Request) -> Response:
 
     これにより、決済直後のユーザー離脱や予約POST失敗があっても、可能な限り予約を
     自動復旧できる。
+
+    あわせて account.updated（事業者の審査状態同期）、および
+    charge.dispute.created / charge.dispute.closed（チャージバックの記録・運営通知）
+    も処理する。
 
     PaymentIntent はプラットフォームアカウント上で destination charge として作成して
     いるため、本 Webhook はプラットフォームアカウントに対して設定する。
@@ -1652,6 +1792,10 @@ def stripe_webhook(request: Request) -> Response:
     # 連結アカウントの審査状態変更を DB に同期
     if event_type == 'account.updated':
         return _handle_account_updated(event['data']['object'])
+
+    # チャージバック（異議申立て）の発生・クローズを記録し、運営へ通知
+    if event_type in ('charge.dispute.created', 'charge.dispute.closed'):
+        return _handle_charge_dispute(event)
 
     # それ以外で関心があるのは決済成功イベントのみ。それ以外は 200 で受理して無視する。
     if event_type != 'payment_intent.succeeded':
