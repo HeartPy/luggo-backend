@@ -29,7 +29,8 @@ from rest_framework.response import Response
 from project.utils import mask_sensitive_id
 from drivers.models import DriverProfile
 from .emails import send_booking_cancellation_emails
-from .models import LuggageBooking
+from .models import BookingAuditLog, LuggageBooking
+from .refunds import log_booking_event, record_api_refund_result
 from .serializers import OwnerBookingUpdateSerializer
 
 
@@ -562,14 +563,21 @@ def update_booking(request: Request, booking_id: str) -> Response:
     )
 
 
-def _refund_booking_payment(booking: LuggageBooking) -> bool:
+def _refund_booking_payment(
+    booking: LuggageBooking,
+    source: str = BookingAuditLog.SOURCE_OWNER_API,
+) -> bool:
     """
     予約に対応する Stripe 決済を全額返金する
 
-    成功（または既に返金済み）の場合 True、失敗の場合 False を返す。
-    決済は destination charge（transfer_data.destination + application_fee_amount）
-    構成のため、reverse_transfer / refund_application_fee を指定して、接続アカウントへ
-    移動した資金とプラットフォーム手数料の双方から資金を引き戻す（顧客への全額返金）。
+    連結アカウントへ移動した資金とプラットフォーム手数料の双方から資金を引き戻す。
+
+    返金 API の結果（Refund ID・状態・金額）は予約レコードに保存し、監査ログにも
+    記録する。これにより、この直後にアプリが落ちて delivery_status を更新できなくても、
+    Webhook 側で予約状態を整合できる。
+
+    冪等キー（idempotency_key）により、キャンセル API がリトライされても Stripe 上で
+    二重返金は発生せず、同一の Refund が返るため状態も一貫する。
     """
     payment_intent_id = (booking.payment_intent_id or '').strip()
     if not payment_intent_id:
@@ -580,7 +588,7 @@ def _refund_booking_payment(booking: LuggageBooking) -> bool:
         return False
 
     try:
-        stripe.Refund.create(
+        refund = stripe.Refund.create(
             payment_intent=payment_intent_id,
             reverse_transfer=True,
             refund_application_fee=True,
@@ -588,6 +596,15 @@ def _refund_booking_payment(booking: LuggageBooking) -> bool:
             # 同一予約の二重返金を防ぐ（再試行時も同じ結果が返る）
             idempotency_key=f'booking_cancel_refund_{booking.id}',
         )
+        # 返金結果を予約へ反映し監査ログへ記録（Webhook 整合処理との突き合わせ用）。
+        # 保存失敗が返金成功の判定を覆さないよう、例外は握りつぶす。
+        try:
+            record_api_refund_result(booking, refund, source=source)
+        except Exception:
+            logger.exception(
+                "返金結果の保存に失敗しました（返金自体は成功）: booking_id=%s",
+                mask_sensitive_id(str(booking.id)),
+            )
         return True
     except stripe.error.InvalidRequestError as e:
         # 既に返金済みの場合は成功扱いとし、キャンセル状態へ進める
@@ -668,8 +685,24 @@ def cancel_bookings(request: Request) -> Response:
             refunded_count += 1
         else:
             no_refund_count += 1
+        previous_delivery_status = booking.delivery_status
         booking.delivery_status = 'cancelled'
         booking.save(update_fields=['delivery_status', 'updated_at'])
+        log_booking_event(
+            booking=booking,
+            action=BookingAuditLog.ACTION_BOOKING_CANCELLED,
+            source=BookingAuditLog.SOURCE_OWNER_API,
+            previous_delivery_status=previous_delivery_status,
+            new_delivery_status='cancelled',
+            new_refund_status=booking.refund_status,
+            stripe_refund_id=booking.stripe_refund_id,
+            amount=booking.refunded_amount if should_refund else 0,
+            message=(
+                '事業者による予約キャンセル（返金あり）。'
+                if should_refund
+                else '事業者による予約キャンセル（返金なし）。'
+            ),
+        )
         # キャンセル確定後に顧客・配達者へ通知メールを送信（メール失敗は
         # キャンセル処理自体には影響させない）。
         # 返金の有無に応じて顧客向けの文面を切り替える。

@@ -20,8 +20,15 @@ import time
 from project.utils import mask_sensitive_id
 from business_owners.models import BusinessProfile
 from business_owners.stripe_info import sync_stripe_review_status
-from .models import LuggageBooking, PendingBooking, ChargeDispute
+from .models import BookingAuditLog, LuggageBooking, PendingBooking, ChargeDispute
 from .owner_views import _refund_booking_payment
+from .refunds import (
+    claim_webhook_event,
+    log_booking_event,
+    mark_webhook_event_processed,
+    normalize_refund_status,
+    reconcile_booking_refund,
+)
 from .serializers import LuggageBookingSerializer, LuggageBookingCreateSerializer
 from .emails import (
     build_issuer_snapshot,
@@ -1018,7 +1025,9 @@ def cancel_booking(request: Request, booking_id: UUID) -> Response:
     # （返金失敗のまま「キャンセル済み」になると未返金が放置されるため）
     refunded = booking.is_refundable_on_cancel()
     if refunded:
-        if not _refund_booking_payment(booking):
+        if not _refund_booking_payment(
+            booking, source=BookingAuditLog.SOURCE_CUSTOMER_API
+        ):
             return Response(
                 {
                     'errMsg': (
@@ -1029,8 +1038,24 @@ def cancel_booking(request: Request, booking_id: UUID) -> Response:
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+    previous_delivery_status = booking.delivery_status
     booking.delivery_status = 'cancelled'
     booking.save(update_fields=['delivery_status', 'updated_at'])
+    log_booking_event(
+        booking=booking,
+        action=BookingAuditLog.ACTION_BOOKING_CANCELLED,
+        source=BookingAuditLog.SOURCE_CUSTOMER_API,
+        previous_delivery_status=previous_delivery_status,
+        new_delivery_status='cancelled',
+        new_refund_status=booking.refund_status,
+        stripe_refund_id=booking.stripe_refund_id,
+        amount=booking.refunded_amount if refunded else 0,
+        message=(
+            '顧客による予約キャンセル（返金あり）。'
+            if refunded
+            else '顧客による予約キャンセル（返金なし）。'
+        ),
+    )
 
     # キャンセル確定後に顧客・配達者へ通知メールを送信
     transaction.on_commit(
@@ -1449,6 +1474,35 @@ def _booking_exists_with_grace(payment_intent_id: str, grace_seconds: int) -> bo
     return False
 
 
+def _get_booking_with_grace(
+    payment_intent_id: str, grace_seconds: int
+) -> Optional[LuggageBooking]:
+    """
+    payment_intent_id に対応する予約を取得
+
+    決済成功から予約レコードが DB に載るまでには、予約作成 POST や
+    payment_intent.succeeded の処理までのタイムラグがある。
+    返金 Webhook 処理時に即座に見つからなくても、猶予時間内で数回ポーリングし、
+    作成完了を待ってから「予約なし」と確定する。
+    """
+    booking = LuggageBooking.objects.filter(
+        payment_intent_id=payment_intent_id
+    ).first()
+    if booking is not None or grace_seconds <= 0:
+        return booking
+
+    poll_interval = 1.0
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        booking = LuggageBooking.objects.filter(
+            payment_intent_id=payment_intent_id
+        ).first()
+        if booking is not None:
+            return booking
+    return None
+
+
 def _notify_unmatched_payment(payment_intent: Any) -> bool:
     """決済成功済みだが予約レコードが無い場合に運営へ通知する。送信成功で True。"""
     payment_intent_id = payment_intent.get('id', '') or ''
@@ -1746,6 +1800,218 @@ def _handle_charge_dispute(event: Any) -> Response:
     return Response(status=status.HTTP_200_OK)
 
 
+def _stripe_id(value: Any) -> str:
+    """Stripe のフィールド（文字列 or オブジェクト）から ID を取り出す"""
+    if not value:
+        return ''
+    if isinstance(value, str):
+        return value
+    if hasattr(value, 'get'):
+        return value.get('id', '') or ''
+    return getattr(value, 'id', '') or ''
+
+
+def _reconcile_and_notify(
+    *,
+    event_type: str,
+    event_id: str,
+    payment_intent_id: str,
+    refund_status: str,
+    stripe_refund_id: str,
+    stripe_charge_id: str,
+    amount: int,
+    refunded_at: Any,
+) -> Response:
+    """
+    返金 Webhook 受信後の共通後処理
+
+    予約を検索し、返金・キャンセル状態を Stripe に合わせて更新する。
+    今回の処理で初めてキャンセルになった場合のみ、顧客へ通知する。
+
+    予約が見つからない場合は運営が調査できるようログに残して 200 を返す。
+    """
+    if not payment_intent_id:
+        logger.warning(
+            "Stripe Webhook(%s): payment_intent が特定できないためスキップします", event_type
+        )
+        mark_webhook_event_processed(event_id)
+        return Response(status=status.HTTP_200_OK)
+
+    grace_seconds = getattr(settings, 'STRIPE_WEBHOOK_BOOKING_GRACE_SECONDS', 10)
+    booking = _get_booking_with_grace(payment_intent_id, grace_seconds)
+    if booking is None:
+        # 予約が見つからない = LugGo 未登録の決済への返金など。運営調査用に記録し、
+        # Stripe が無限に再送しないよう 200 で受理する。監査ログにも残す。
+        logger.error(
+            "Stripe Webhook(%s): 返金に対応する予約が見つかりません payment_intent_id=%s "
+            "refund_id=%s",
+            event_type,
+            mask_sensitive_id(payment_intent_id),
+            mask_sensitive_id(stripe_refund_id) if stripe_refund_id else '-',
+        )
+        log_booking_event(
+            booking=None,
+            action=BookingAuditLog.ACTION_RECONCILED,
+            source=BookingAuditLog.SOURCE_WEBHOOK,
+            payment_intent_id=payment_intent_id,
+            new_refund_status=refund_status,
+            stripe_event_id=event_id,
+            stripe_refund_id=stripe_refund_id,
+            stripe_charge_id=stripe_charge_id,
+            amount=amount,
+            message=(
+                f'{event_type} を受信しましたが、対応する予約が見つかりませんでした。'
+            ),
+        )
+        mark_webhook_event_processed(event_id)
+        return Response(status=status.HTTP_200_OK)
+
+    try:
+        result = reconcile_booking_refund(
+            payment_intent_id=payment_intent_id,
+            refund_status=refund_status,
+            stripe_refund_id=stripe_refund_id,
+            stripe_charge_id=stripe_charge_id,
+            amount=amount,
+            refunded_at=refunded_at,
+            source=BookingAuditLog.SOURCE_WEBHOOK,
+            stripe_event_id=event_id,
+        )
+    except Exception:
+        # 一時的な DB エラー等の可能性。処理未完了のまま 500 を返し Stripe の再送に委ねる。
+        logger.exception(
+            "Stripe Webhook(%s): 返金整合処理に失敗しました payment_intent_id=%s",
+            event_type,
+            mask_sensitive_id(payment_intent_id),
+        )
+        return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    if result.cancelled_now:
+        logger.info(
+            "Stripe Webhook(%s): 返金に伴い予約をキャンセルに更新しました booking_id=%s",
+            event_type,
+            mask_sensitive_id(str(result.booking.id)) if result.booking else '-',
+        )
+        # API 途中失敗（アプリ落ち）やダッシュボード手動返金で未キャンセルだった予約を
+        # ここでキャンセル済みにした場合のみ、顧客・配達者へ通知
+        booking_to_notify = result.booking
+        if booking_to_notify is not None:
+            transaction.on_commit(
+                lambda b=booking_to_notify: send_booking_cancellation_emails(
+                    b, refunded=True
+                )
+            )
+
+    mark_webhook_event_processed(event_id)
+    return Response(status=status.HTTP_200_OK)
+
+
+def _handle_charge_refunded(event: Any) -> Response:
+    """
+    Stripe charge.refunded を受け、返金に合わせて予約状態を整合する
+
+    主に Stripe ダッシュボードからの手動返金や、API 返金後にアプリが落ちて
+    delivery_status を更新できなかったケースの復旧に用いる。
+    """
+    event_id = event.get('id') or ''
+    event_type = event.get('type') or 'charge.refunded'
+    charge = event['data']['object']
+
+    def _field(key: str) -> Any:
+        return charge.get(key) if hasattr(charge, 'get') else getattr(charge, key, None)
+
+    payment_intent_id = _stripe_id(_field('payment_intent'))
+    charge_id = _field('id') or ''
+    amount_refunded = _field('amount_refunded')
+    amount_refunded = amount_refunded if isinstance(amount_refunded, int) else 0
+    is_refunded = bool(_field('refunded'))
+
+    # 最新の Refund オブジェクトから ID を取得
+    refund_id = ''
+    refunds = _field('refunds')
+    refund_list = None
+    if refunds is not None:
+        refund_list = refunds.get('data') if hasattr(refunds, 'get') else None
+    if refund_list:
+        refund_id = _stripe_id(refund_list[0])
+
+    # charge.refunded は返金確定後に届くイベントのため succeeded とみなす。
+    refund_status = (
+        LuggageBooking.REFUND_STATUS_SUCCEEDED
+        if (is_refunded or amount_refunded > 0)
+        else LuggageBooking.REFUND_STATUS_PENDING
+    )
+    refunded_at = _stripe_ts_to_datetime(event.get('created'))
+
+    return _reconcile_and_notify(
+        event_type=event_type,
+        event_id=event_id,
+        payment_intent_id=payment_intent_id,
+        refund_status=refund_status,
+        stripe_refund_id=refund_id,
+        stripe_charge_id=charge_id,
+        amount=amount_refunded,
+        refunded_at=refunded_at,
+    )
+
+
+def _handle_refund_updated(event: Any) -> Response:
+    """
+    refund.updated を受け、返金の最新状態に合わせて予約状態を整合する
+
+    返金の status が変わったときや、
+    ダッシュボードでの手動返金による状態変化を、
+    LugGo の予約状態にも反映する。
+    """
+    event_id = event.get('id') or ''
+    event_type = event.get('type') or 'refund.updated'
+    refund = event['data']['object']
+
+    def _field(key: str) -> Any:
+        return refund.get(key) if hasattr(refund, 'get') else getattr(refund, key, None)
+
+    payment_intent_id = _stripe_id(_field('payment_intent'))
+    charge_id = _stripe_id(_field('charge'))
+    refund_id = _field('id') or ''
+    amount = _field('amount')
+    amount = amount if isinstance(amount, int) and amount >= 0 else 0
+    refund_status = normalize_refund_status(_field('status'))
+    refunded_at = _stripe_ts_to_datetime(event.get('created'))
+
+    return _reconcile_and_notify(
+        event_type=event_type,
+        event_id=event_id,
+        payment_intent_id=payment_intent_id,
+        refund_status=refund_status,
+        stripe_refund_id=refund_id,
+        stripe_charge_id=charge_id,
+        amount=amount,
+        refunded_at=refunded_at,
+    )
+
+
+def _handle_refund_event(event: Any) -> Response:
+    """
+    返金系 Webhook（charge.refunded / refund.updated）の入口
+
+    冪等化のため、同一イベントの再送は最初の 1 回のみ処理する。
+    """
+    event_type = event.get('type') or ''
+    event_id = event.get('id') or ''
+
+    if not claim_webhook_event(event_id, event_type):
+        logger.info(
+            "Stripe Webhook(%s): 処理済みイベントのため無視します event_id=%s",
+            event_type,
+            mask_sensitive_id(event_id) if event_id else '-',
+        )
+        return Response(status=status.HTTP_200_OK)
+
+    if event_type == 'charge.refunded':
+        return _handle_charge_refunded(event)
+    return _handle_refund_updated(event)
+
+
 @csrf_exempt
 @api_view(['POST'])
 @authentication_classes([])
@@ -1761,9 +2027,9 @@ def stripe_webhook(request: Request) -> Response:
     これにより、決済直後のユーザー離脱や予約POST失敗があっても、可能な限り予約を
     自動復旧できる。
 
-    あわせて account.updated（事業者の審査状態同期）、および
-    charge.dispute.created / charge.dispute.closed（チャージバックの記録・運営通知）
-    も処理する。
+    あわせて account.updated（事業者の審査状態同期）、
+    charge.dispute.created / charge.dispute.closed（チャージバックの記録・運営通知）、
+     charge.refunded / refund.updated（返金状態の整合性担保）も処理する。
 
     PaymentIntent はプラットフォームアカウント上で destination charge として作成して
     いるため、本 Webhook はプラットフォームアカウントに対して設定する。
@@ -1796,6 +2062,10 @@ def stripe_webhook(request: Request) -> Response:
     # チャージバック（異議申立て）の発生・クローズを記録し、運営へ通知
     if event_type in ('charge.dispute.created', 'charge.dispute.closed'):
         return _handle_charge_dispute(event)
+
+    # 返金の発生・状態変化を受け、Stripe を正として予約の返金・配達状況を整合
+    if event_type in ('charge.refunded', 'refund.updated'):
+        return _handle_refund_event(event)
 
     # それ以外で関心があるのは決済成功イベントのみ。それ以外は 200 で受理して無視する。
     if event_type != 'payment_intent.succeeded':
