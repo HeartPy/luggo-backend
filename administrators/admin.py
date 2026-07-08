@@ -3,7 +3,7 @@ from django.http import HttpRequest
 from django.db.models import QuerySet
 from django.utils import timezone
 from business_owners.models import BusinessProfile
-from bookings.models import ChargeDispute
+from bookings.models import BookingAuditLog, ChargeDispute, StripeWebhookEvent
 
 
 @admin.register(BusinessProfile)
@@ -147,7 +147,104 @@ class ChargeDisputeAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-
         return False
 
     def has_delete_permission(self, request: HttpRequest, obj=None) -> bool:
-        # Stripe Webhook で作られた記録なので、手動削除はさせない
+        # Stripe Webhook で作られた記録なので、手動削除不可
+        return False
+
+
+@admin.register(BookingAuditLog)
+class BookingAuditLogAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubsではModelAdminがジェネリック扱いだが、実行時は非ジェネリックのため
+    list_display = [
+        'created_at',
+        'action',
+        'source',
+        'booking',
+        'previous_delivery_status',
+        'new_delivery_status',
+        'previous_refund_status',
+        'new_refund_status',
+        'amount',
+    ]
+    search_fields = [
+        'payment_intent_id',
+        'stripe_refund_id',
+        'stripe_charge_id',
+        'stripe_event_id',
+        'booking__booking_number',
+    ]
+    list_filter = [
+        'action',
+        'source',
+        'new_delivery_status',
+        'new_refund_status',
+        'created_at',
+    ]
+    readonly_fields = [
+        'booking',
+        'payment_intent_id',
+        'action',
+        'source',
+        'previous_delivery_status',
+        'new_delivery_status',
+        'previous_refund_status',
+        'new_refund_status',
+        'stripe_event_id',
+        'stripe_refund_id',
+        'stripe_charge_id',
+        'amount',
+        'message',
+        'metadata',
+        'created_at',
+    ]
+    ordering = ['-created_at']
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        # 監査ログは処理経路からのみ作成する
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj=None) -> bool:
+        # 編集不可
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj=None) -> bool:
+        # 監査証跡のため、削除不可
+        return False
+
+
+@admin.register(StripeWebhookEvent)
+class StripeWebhookEventAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubsではModelAdminがジェネリック扱いだが、実行時は非ジェネリックのため
+    list_display = [
+        'event_id',
+        'event_type',
+        'received_at',
+        'processed_at',
+    ]
+    search_fields = [
+        'event_id',
+        'event_type',
+    ]
+    list_filter = [
+        'event_type',
+        'received_at',
+        'processed_at',
+    ]
+    readonly_fields = [
+        'event_id',
+        'event_type',
+        'received_at',
+        'processed_at',
+    ]
+    ordering = ['-received_at']
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        # 記録は Stripe Webhook 経由でのみ作成する
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj=None) -> bool:
+        # 編集不可
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj=None) -> bool:
+        # Webhook 処理履歴のため、手動削除不可
         return False
 
 

@@ -20,6 +20,20 @@ class LuggageBooking(models.Model):
         ('cancelled', 'キャンセル'),
     ]
 
+    # 返金状況（Stripe 上の返金状態を LugGo 側で追跡し、整合性を担保するために使う）
+    REFUND_STATUS_NONE = 'none'
+    REFUND_STATUS_PENDING = 'pending'
+    REFUND_STATUS_SUCCEEDED = 'succeeded'
+    REFUND_STATUS_FAILED = 'failed'
+    REFUND_STATUS_CANCELED = 'canceled'
+    REFUND_STATUS_CHOICES = [
+        (REFUND_STATUS_NONE, '返金なし'),
+        (REFUND_STATUS_PENDING, '返金処理中'),
+        (REFUND_STATUS_SUCCEEDED, '返金完了'),
+        (REFUND_STATUS_FAILED, '返金失敗'),
+        (REFUND_STATUS_CANCELED, '返金取消'),
+    ]
+
     # 基本情報
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     booking_number = models.CharField(max_length=20, unique=True, blank=True)
@@ -113,6 +127,42 @@ class LuggageBooking(models.Model):
     payment_intent_id = models.CharField(
         max_length=255,
         verbose_name='Stripe Payment Intent ID'
+    )
+
+    # 返金情報。Stripe と LugGo の間で
+    # 返金状態のズレが生じないよう、返金の識別子・状態・金額・日時を保持。
+    refund_status = models.CharField(
+        max_length=20,
+        choices=REFUND_STATUS_CHOICES,
+        default=REFUND_STATUS_NONE,
+        db_index=True,
+        verbose_name='返金状況',
+    )
+    stripe_refund_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='Stripe Refund ID',
+    )
+    stripe_charge_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='Stripe Charge ID',
+    )
+    refunded_amount = models.PositiveIntegerField(
+        default=0,
+        verbose_name='返金済み金額',
+    )
+    refunded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='返金完了日時',
+    )
+    refund_reconciled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='返金整合性チェック日時',
     )
 
     # 発行者情報のスナップショット。
@@ -392,3 +442,170 @@ class ChargeDispute(models.Model):
 
     def __str__(self) -> str:
         return f'ChargeDispute({self.dispute_id}, status={self.status})'
+
+
+class StripeWebhookEvent(models.Model):
+    """受信した Stripe Webhook イベントの処理記録（冪等化用）"""
+
+    event_id = models.CharField(
+        max_length=255,
+        unique=True,
+        verbose_name='Stripe Event ID',
+    )
+    event_type = models.CharField(
+        max_length=100,
+        blank=True,
+        default='',
+        verbose_name='イベント種別',
+    )
+    received_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name='受信日時',
+    )
+    processed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='処理完了日時',
+    )
+
+    class Meta:
+        db_table = 'stripe_webhook_events'
+        verbose_name = 'Stripe Webhook イベント'
+        verbose_name_plural = 'Stripe Webhook イベント'
+        ordering = ['-received_at']
+
+    def __str__(self) -> str:
+        return f'StripeWebhookEvent({self.event_id}, {self.event_type})'
+
+
+class BookingAuditLog(models.Model):
+    """予約の返金・キャンセルに関する監査ログ"""
+
+    # 変更の発生経路
+    SOURCE_OWNER_API = 'owner_api'
+    SOURCE_CUSTOMER_API = 'customer_api'
+    SOURCE_WEBHOOK = 'webhook'
+    SOURCE_DASHBOARD = 'dashboard'
+    SOURCE_SYSTEM = 'system'
+    SOURCE_CHOICES = [
+        (SOURCE_OWNER_API, '事業者API'),
+        (SOURCE_CUSTOMER_API, '顧客API'),
+        (SOURCE_WEBHOOK, 'Stripe Webhook'),
+        (SOURCE_DASHBOARD, 'Stripe ダッシュボード（手動）'),
+        (SOURCE_SYSTEM, 'システム'),
+    ]
+
+    # 記録する操作の種類
+    ACTION_REFUND_REQUESTED = 'refund_requested'
+    ACTION_REFUND_SUCCEEDED = 'refund_succeeded'
+    ACTION_REFUND_PENDING = 'refund_pending'
+    ACTION_REFUND_FAILED = 'refund_failed'
+    ACTION_REFUND_CANCELED = 'refund_canceled'
+    ACTION_BOOKING_CANCELLED = 'booking_cancelled'
+    ACTION_RECONCILED = 'reconciled'
+    ACTION_CHOICES = [
+        (ACTION_REFUND_REQUESTED, '返金リクエスト'),
+        (ACTION_REFUND_SUCCEEDED, '返金完了'),
+        (ACTION_REFUND_PENDING, '返金処理中'),
+        (ACTION_REFUND_FAILED, '返金失敗'),
+        (ACTION_REFUND_CANCELED, '返金取消'),
+        (ACTION_BOOKING_CANCELLED, '予約キャンセル'),
+        (ACTION_RECONCILED, '整合性同期'),
+    ]
+
+    booking = models.ForeignKey(
+        'LuggageBooking',
+        on_delete=models.SET_NULL,
+        related_name='audit_logs',
+        null=True,
+        blank=True,
+        verbose_name='対応する予約',
+    )
+    payment_intent_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        db_index=True,
+        verbose_name='Stripe Payment Intent ID',
+    )
+    action = models.CharField(
+        max_length=40,
+        choices=ACTION_CHOICES,
+        verbose_name='操作',
+    )
+    source = models.CharField(
+        max_length=20,
+        choices=SOURCE_CHOICES,
+        verbose_name='発生経路',
+    )
+    previous_delivery_status = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        verbose_name='変更前の配達状況',
+    )
+    new_delivery_status = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        verbose_name='変更後の配達状況',
+    )
+    previous_refund_status = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        verbose_name='変更前の返金状況',
+    )
+    new_refund_status = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        verbose_name='変更後の返金状況',
+    )
+    stripe_event_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='Stripe Event ID',
+    )
+    stripe_refund_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='Stripe Refund ID',
+    )
+    stripe_charge_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='Stripe Charge ID',
+    )
+    amount = models.PositiveIntegerField(
+        default=0,
+        verbose_name='金額',
+    )
+    message = models.TextField(
+        blank=True,
+        default='',
+        verbose_name='メモ',
+    )
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name='付随情報',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='記録日時')
+
+    class Meta:
+        db_table = 'booking_audit_logs'
+        verbose_name = '予約監査ログ'
+        verbose_name_plural = '予約監査ログ'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['action']),
+            models.Index(fields=['source']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self) -> str:
+        return f'BookingAuditLog({self.action}, source={self.source})'
