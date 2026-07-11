@@ -29,7 +29,11 @@ from .refunds import (
     normalize_refund_status,
     reconcile_booking_refund,
 )
-from .serializers import LuggageBookingSerializer, LuggageBookingCreateSerializer
+from .serializers import (
+    LuggageBookingSerializer,
+    LuggageBookingCreateSerializer,
+    normalize_phone_number,
+)
 from .emails import (
     build_issuer_snapshot,
     send_booking_cancellation_emails,
@@ -376,12 +380,72 @@ def _calc_bounding_box(
     return south, north, west, east
 
 
+# サジェストで受け付ける Google Places API の languageCode
+_SUGGESTION_ALLOWED_LANGS = {'ja', 'en', 'zh-CN', 'zh-TW'}
+
+
+def _places_text_search(
+    query: str,
+    language_code: str,
+    codes: list[str],
+) -> list[dict[str, Any]]:
+    """Places API Text Search を実行し、places のリストを返す"""
+    url = 'https://places.googleapis.com/v1/places:searchText'
+
+    request_body: dict[str, Any] = {
+        'textQuery': query,
+        'languageCode': language_code,
+        'regionCode': 'JP',
+        'maxResultCount': 20,
+    }
+
+    # 都道府県バウンディングボックスで locationRestriction を設定
+    if codes:
+        bbox = _calc_bounding_box(codes)
+        if bbox:
+            south, north, west, east = bbox
+            request_body['locationRestriction'] = {
+                'rectangle': {
+                    'low': {'latitude': south, 'longitude': west},
+                    'high': {'latitude': north, 'longitude': east},
+                }
+            }
+
+    headers = {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': settings.GOOGLE_PLACES_API_KEY,
+        'X-Goog-FieldMask': (
+            'places.id,'
+            'places.displayName,'
+            'places.formattedAddress,'
+            'places.types,'
+            'places.primaryType,'
+            'places.rating,'
+            'places.userRatingCount,'
+            'places.location'
+        ),
+    }
+
+    response = requests.post(url, json=request_body, headers=headers, timeout=10)
+    response.raise_for_status()
+
+    data = response.json()
+    return data.get('places', [])
+
+
 @api_view(['GET'])
 @permission_classes([permissions.AllowAny])
 def location_suggestions(request: Request) -> Response:
-    """Google Places APIを使用した場所のサジェスト取得"""
+    """Google Places APIを使用した場所のサジェスト取得
+
+    lang パラメータ（ja / en / zh-CN / zh-TW）で表記言語を切り替える。
+    非日本語の場合は、事業者向けの日本語表記（name_ja / address_ja）も併せて返す。
+    """
     query = request.GET.get('q', '').strip()
     prefectures_param = request.GET.get('prefectures', '').strip()
+    lang = request.GET.get('lang', 'ja').strip()
+    if lang not in _SUGGESTION_ALLOWED_LANGS:
+        lang = 'ja'
 
     if not query or len(query) < 2:
         return Response({'suggestions': []})
@@ -394,47 +458,15 @@ def location_suggestions(request: Request) -> Response:
         allowed_pref_names = [_PREF_MAP[code] for code in codes if code in _PREF_MAP]
 
     try:
-        # Places API — Text Search エンドポイント
-        url = 'https://places.googleapis.com/v1/places:searchText'
+        places = _places_text_search(query, lang, codes)
 
-        request_body: dict[str, Any] = {
-            'textQuery': query,
-            'languageCode': 'ja',
-            'regionCode': 'JP',
-            'maxResultCount': 20,
-        }
-
-        # 都道府県バウンディングボックスで locationRestriction を設定
-        if codes:
-            bbox = _calc_bounding_box(codes)
-            if bbox:
-                south, north, west, east = bbox
-                request_body['locationRestriction'] = {
-                    'rectangle': {
-                        'low': {'latitude': south, 'longitude': west},
-                        'high': {'latitude': north, 'longitude': east},
-                    }
-                }
-
-        headers = {
-            'Content-Type': 'application/json',
-            'X-Goog-Api-Key': settings.GOOGLE_PLACES_API_KEY,
-            'X-Goog-FieldMask': (
-                'places.id,'
-                'places.displayName,'
-                'places.formattedAddress,'
-                'places.types,'
-                'places.primaryType,'
-                'places.rating,'
-                'places.userRatingCount,'
-                'places.location'
-            ),
-        }
-
-        response = requests.post(url, json=request_body, headers=headers, timeout=10)
-        response.raise_for_status()
-
-        data = response.json()
+        # 非日本語の場合は日本語表記も取得し、place id で突き合わせる
+        ja_places_by_id: dict[str, dict[str, Any]] = {}
+        if lang != 'ja':
+            ja_places = _places_text_search(query, 'ja', codes)
+            ja_places_by_id = {
+                place.get('id', ''): place for place in ja_places if place.get('id')
+            }
 
         # 宿泊施設・空港・鉄道駅のみ許可
         allowed_types = {
@@ -447,7 +479,7 @@ def location_suggestions(request: Request) -> Response:
         }
 
         suggestions = []
-        for place in data.get('places', []):
+        for place in places:
             place_types = set(place.get('types', []))
             primary_type = place.get('primaryType', '')
 
@@ -455,10 +487,18 @@ def location_suggestions(request: Request) -> Response:
                 continue
 
             formatted_address = place.get('formattedAddress', '')
+            ja_place = ja_places_by_id.get(place.get('id', '')) if lang != 'ja' else None
+            ja_address = (ja_place or {}).get('formattedAddress', '')
+            ja_name = ((ja_place or {}).get('displayName') or {}).get('text', '')
 
-            # 都道府県フィルタが指定されている場合、formattedAddress に都道府県名が含まれるか確認
-            if allowed_pref_names and not any(pname in formatted_address for pname in allowed_pref_names):
-                continue
+            # 都道府県フィルタは日本語住所（日本語検索時は formattedAddress）で判定する。
+            # 非日本語で日本語表記が取れなかった場合は bbox 制限に委ねて通過させる。
+            if allowed_pref_names:
+                address_for_filter = ja_address if lang != 'ja' else formatted_address
+                if address_for_filter and not any(
+                    pname in address_for_filter for pname in allowed_pref_names
+                ):
+                    continue
 
             name = place.get('displayName', {}).get('text', '')
             location = place.get('location', {})
@@ -475,6 +515,9 @@ def location_suggestions(request: Request) -> Response:
                     'lng': location.get('longitude'),
                 },
             }
+            if lang != 'ja':
+                suggestion['name_ja'] = ja_name
+                suggestion['address_ja'] = ja_address
             suggestions.append(suggestion)
 
             # 最大10件まで
@@ -501,9 +544,13 @@ LUGGAGE_ITEM_KEYS = ('cabin', 'checked', 'oversize')
 _BOOKING_PAYLOAD_FIELDS = (
     'pickup_location_name',
     'pickup_location_address',
+    'pickup_location_name_ja',
+    'pickup_location_address_ja',
     'pickup_date',
     'delivery_location_name',
     'delivery_location_address',
+    'delivery_location_name_ja',
+    'delivery_location_address_ja',
     'delivery_date',
     'notes',
     'customer_email',
@@ -511,9 +558,20 @@ _BOOKING_PAYLOAD_FIELDS = (
     'customer_phone_number',
     'customer_nationality',
     'guest_name',
+    'customer_language',
 )
 
 _BOOKING_DATE_FIELDS = ('pickup_date', 'delivery_date')
+
+# 顧客の表示言語として受け付ける値（不正値・未指定は 'ja' に正規化）
+_ALLOWED_CUSTOMER_LANGUAGES = {'ja', 'en', 'zh-Hans', 'zh-Hant'}
+
+
+def normalize_customer_language(value: Any) -> str:
+    """顧客の表示言語を正規化"""
+    if isinstance(value, str) and value in _ALLOWED_CUSTOMER_LANGUAGES:
+        return value
+    return 'ja'
 
 
 def normalize_luggage_counts(source: dict[str, Any]) -> tuple[dict[str, int], int]:
@@ -603,6 +661,10 @@ def _booking_fields_from_payload(payload: dict[str, Any]) -> Optional[dict[str, 
                 fields[key] = date_type.fromisoformat(str(value))
             except (ValueError, TypeError):
                 return None
+        elif key == 'customer_language':
+            fields[key] = normalize_customer_language(value)
+        elif key == 'customer_phone_number':
+            fields[key] = normalize_phone_number(value) if value is not None else ''
         else:
             fields[key] = value if value is not None else ''
     return fields
@@ -769,6 +831,9 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
                     key: validated.get(key, '')
                     for key in _BOOKING_PAYLOAD_FIELDS
                 }
+                booking_fields['customer_language'] = normalize_customer_language(
+                    booking_fields.get('customer_language')
+                )
 
                 # 予約を冪等に作成する（フロント/Webhook が競合しても二重作成しない）
                 try:
@@ -973,8 +1038,10 @@ def download_receipt(request: Request, booking_id: UUID) -> HttpResponse:
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    lang = (request.GET.get('lang') or '').strip() or None
+
     try:
-        pdf_bytes = build_receipt_pdf(booking)
+        pdf_bytes = build_receipt_pdf(booking, lang=lang)
     except Exception:
         logger.exception("領収書PDFの生成に失敗: booking_id=%s", booking_id)
         return Response(

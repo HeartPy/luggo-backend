@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -7,6 +8,19 @@ from .models import LuggageBooking
 
 _JST = ZoneInfo("Asia/Tokyo")
 _MAX_BOOKING_DAYS = 180
+
+# 電話番号の許可形式
+# - 国際形式: 先頭が + の国番号付き（+ と 7〜15 桁）
+# - 国内形式: 10〜11 桁の数字のみ（日本語ページのみ許可）
+_PHONE_INTERNATIONAL_RE = re.compile(r'^\+\d{7,15}$')
+_PHONE_ANY_RE = re.compile(r'^(?:\+\d{7,15}|\d{10,11})$')
+
+
+def normalize_phone_number(value: Any) -> Any:
+    """電話番号からスペース・ハイフンを除去"""
+    if isinstance(value, str):
+        return re.sub(r'[\s-]', '', value)
+    return value
 
 
 def _min_pickup_date() -> date:
@@ -71,6 +85,9 @@ class LuggageBookingSerializer(serializers.ModelSerializer[LuggageBooking]):
             raise serializers.ValidationError('予約できるのは半年先までです。')
         return value
 
+    def validate_customer_phone_number(self, value: str) -> str:
+        return normalize_phone_number(value)
+
     def validate(self, data: Dict[str, Any]) -> Dict[str, Any]:
         pickup_date = data.get('pickup_date')
         delivery_date = data.get('delivery_date')
@@ -79,6 +96,23 @@ class LuggageBookingSerializer(serializers.ModelSerializer[LuggageBooking]):
             if delivery_date < pickup_date:
                 raise serializers.ValidationError({
                     'delivery_date': '配送日は集荷日以降の日付を指定してください。'
+                })
+
+        # 電話番号の形式チェック
+        # 日本語以外のページで作成された予約は国番号（+）付きの国際形式のみ許可
+        phone = data.get('customer_phone_number')
+        language = data.get('customer_language', 'ja')
+        if phone:
+            if language != 'ja':
+                if not _PHONE_INTERNATIONAL_RE.match(phone):
+                    raise serializers.ValidationError({
+                        'customer_phone_number': (
+                            '電話番号は国番号と + から始まる国際形式で入力してください。'
+                        )
+                    })
+            elif not _PHONE_ANY_RE.match(phone):
+                raise serializers.ValidationError({
+                    'customer_phone_number': '有効な電話番号を入力してください。'
                 })
 
         return data
@@ -148,15 +182,49 @@ class OwnerBookingUpdateSerializer(serializers.ModelSerializer[LuggageBooking]):
             })
         return data
 
+    # 非日本語予約の場所編集: 事業者の変更は _ja フィールドへ振り向ける。
+    # base フィールドは旅行者の入力表記のまま保持する。
+    _LOCATION_JA_FIELDS = {
+        'pickup_location_name': 'pickup_location_name_ja',
+        'pickup_location_address': 'pickup_location_address_ja',
+        'delivery_location_name': 'delivery_location_name_ja',
+        'delivery_location_address': 'delivery_location_address_ja',
+    }
+
+    def update(self, instance: LuggageBooking, validated_data: Dict[str, Any]) -> LuggageBooking:
+        if instance.customer_language != 'ja':
+            for base_field, ja_field in self._LOCATION_JA_FIELDS.items():
+                if base_field in validated_data:
+                    setattr(instance, ja_field, validated_data.pop(base_field))
+        return super().update(instance, validated_data)
+
 
 class LuggageBookingCreateSerializer(serializers.ModelSerializer[LuggageBooking]):
     """予約作成用シリアライザー"""
     payment_intent_id = serializers.CharField(required=True, allow_blank=False)
     customer_name = serializers.CharField(required=True, allow_blank=False, max_length=200)
     customer_email = serializers.EmailField(required=True, allow_blank=False)
-    customer_phone_number = serializers.CharField(required=True, allow_blank=False, max_length=15)
+    customer_phone_number = serializers.CharField(required=True, allow_blank=False, max_length=16)
     customer_nationality = serializers.CharField(required=True, allow_blank=False, max_length=3)
     guest_name = serializers.CharField(required=True, allow_blank=False, max_length=200)
+    customer_language = serializers.ChoiceField(
+        choices=LuggageBooking.CUSTOMER_LANGUAGE_CHOICES,
+        required=False,
+        default='ja',
+    )
+    # Google サジェストの日本語表記（事業者の予約一覧用）
+    pickup_location_name_ja = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=200
+    )
+    pickup_location_address_ja = serializers.CharField(
+        required=False, allow_blank=True, default=''
+    )
+    delivery_location_name_ja = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=200
+    )
+    delivery_location_address_ja = serializers.CharField(
+        required=False, allow_blank=True, default=''
+    )
 
     class Meta:
         model = LuggageBooking
@@ -164,9 +232,13 @@ class LuggageBookingCreateSerializer(serializers.ModelSerializer[LuggageBooking]
             'payment_intent_id',
             'pickup_location_name',
             'pickup_location_address',
+            'pickup_location_name_ja',
+            'pickup_location_address_ja',
             'pickup_date',
             'delivery_location_name',
             'delivery_location_address',
+            'delivery_location_name_ja',
+            'delivery_location_address_ja',
             'delivery_date',
             'notes',
             'customer_email',
@@ -174,6 +246,7 @@ class LuggageBookingCreateSerializer(serializers.ModelSerializer[LuggageBooking]
             'customer_phone_number',
             'customer_nationality',
             'guest_name',
+            'customer_language',
         ]
 
     def validate_pickup_date(self, value: date) -> date:

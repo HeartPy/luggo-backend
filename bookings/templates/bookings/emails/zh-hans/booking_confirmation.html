@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>预约完成通知</title>
+  </head>
+  <body
+    style="
+      margin: 0;
+      padding: 0;
+      background-color: #f4f4f5;
+      font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      color: #1f2937;
+    "
+  >
+    <table
+      role="presentation"
+      width="100%"
+      cellpadding="0"
+      cellspacing="0"
+      style="background-color: #f4f4f5; padding: 24px 0"
+    >
+      <tr>
+        <td align="center">
+          <table
+            role="presentation"
+            width="600"
+            cellpadding="0"
+            cellspacing="0"
+            style="
+              width: 600px;
+              max-width: 92%;
+              background-color: #fff;
+              border-radius: 12px;
+              overflow: hidden;
+              box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+            "
+          >
+            <tr>
+              <td style="padding: 32px">
+                <p style="margin: 0 0 16px; font-size: 16px">{{ customer_name }} 您好：</p>
+                <p style="margin: 0 0 24px; font-size: 14px; line-height: 1.8">
+                  感谢您使用行李配送服务。<br />
+                  您的预约已确认，详情如下。
+                </p>
+
+                <div
+                  style="
+                    background-color: #f9fafb;
+                    border: 1px solid #e5e7eb;
+                    border-radius: 8px;
+                    padding: 16px 20px;
+                    margin-bottom: 24px;
+                  "
+                >
+                  <p style="margin: 0; font-size: 12px; color: #111827">预约编号</p>
+                  <p
+                    style="
+                      margin: 4px 0 0;
+                      font-size: 18px;
+                      font-weight: bold;
+                      letter-spacing: 0.5px;
+                    "
+                  >
+                    {{ booking_number }}
+                  </p>
+                </div>
+
+                <h2 style="margin: 0 0 8px; font-size: 14px; color: #111827">■ 取件</h2>
+                <table
+                  role="presentation"
+                  width="100%"
+                  cellpadding="0"
+                  cellspacing="0"
+                  style="margin: 0 0 24px; font-size: 14px; line-height: 1.8"
+                >
+                  <tr>
+                    <td style="padding-left: 16px; vertical-align: top">
+                      地点：{{ pickup_location_name }}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding-left: 16px; vertical-align: top">
+                      地址：{{ pickup_location_address }}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding-left: 16px; vertical-align: top">
+                      取件日期：{{ pickup_date }}
+                    </td>
+                  </tr>
+                </table>
+
+                <h2 style="margin: 0 0 8px; font-size: 14px; color: #111827">■ 送达</h2>
+                <table
+                  role="presentation"
+                  width="100%"
+                  cellpadding="0"
+                  cellspacing="0"
+                  style="margin: 0 0 24px; font-size: 14px; line-height: 1.8"
+                >
+                  <tr>
+                    <td style="padding-left: 16px; vertical-align: top">
+                      地点：{{ delivery_location_name }}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding-left: 16px; vertical-align: top">
+                      地址：{{ delivery_location_address }}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding-left: 16px; vertical-align: top">
+                      送达日期：{{ delivery_date }}
+                    </td>
+                  </tr>
+                </table>
+
+                <h2 style="margin: 0 0 8px; font-size: 14px; color: #111827">■ 行李</h2>
+                <table
+                  role="presentation"
+                  width="100%"
+                  cellpadding="0"
+                  cellspacing="0"
+                  style="margin: 0 0 24px; font-size: 14px; line-height: 1.8"
+                >
+                  {% for item in luggage_lines %}
+                  <tr>
+                    <td style="padding-left: 16px">・{{ item.label }} × {{ item.count }}件</td>
+                  </tr>
+                  {% endfor %}
+                </table>
+
+                <div
+                  style="
+                    background-color: #111827;
+                    border-radius: 8px;
+                    padding: 16px 20px;
+                    margin-bottom: 24px;
+                  "
+                >
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td style="color: #fff; font-size: 14px">支付金额</td>
+                      <td
+                        style="
+                          color: #fff;
+                          font-size: 20px;
+                          font-weight: bold;
+                          text-align: right;
+                          white-space: nowrap;
+                        "
+                      >
+                        ¥{{ total_amount_display }}（含税）
+                      </td>
+                    </tr>
+                  </table>
+                </div>
+
+                {% if notes %}
+                <h2 style="margin: 0 0 8px; font-size: 14px; color: #111827">■ 备注</h2>
+                <p
+                  style="
+                    margin: 0 0 24px;
+                    padding-left: 16px;
+                    font-size: 14px;
+                    line-height: 1.8;
+                    text-align: left;
+                  "
+                >
+                  {{ notes|linebreaksbr }}
+                </p>
+                {% endif %}
+
+                <p style="margin: 0 0 16px; font-size: 14px; line-height: 1.8">
+                  如需查询或取消预约，请准备好预约编号，<br />
+                  并通过以下预约状态查询页面办理。<br />
+                  如有任何疑问，请与我们联系。
+                </p>
+
+                {% if status_url %}
+                <table
+                  role="presentation"
+                  width="100%"
+                  cellpadding="0"
+                  cellspacing="0"
+                  style="margin: 0 0 24px"
+                >
+                  <tr>
+                    <td align="center">
+                      <a
+                        href="{{ status_url }}"
+                        style="
+                          display: inline-block;
+                          background-color: #111827;
+                          color: #fff;
+                          font-size: 14px;
+                          font-weight: bold;
+                          text-decoration: none;
+                          padding: 12px 28px;
+                          border-radius: 8px;
+                        "
+                        >查询预约状态</a
+                      >
+                    </td>
+                  </tr>
+                </table>
+                {% endif %}
+
+                <p style="margin: 0; font-size: 14px; line-height: 1.8; color: #6b7280">
+                  ※本邮件为系统自动发送，请勿直接回复。
+                </p>
+              </td>
+            </tr>
+            {% if business_name %}
+            <tr>
+              <td
+                style="background-color: #f9fafb; padding: 20px 32px; border-top: 1px solid #e5e7eb"
+              >
+                <p style="margin: 0; font-size: 14px; color: #374151; line-height: 1.8">
+                  ----------------------------------------<br />
+                  {{ business_name }}{% if business_address %}<br />{{ business_address|linebreaksbr
+                  }}{% endif %}{% if business_phone %}<br />联系电话：{{
+                  business_phone }}{% endif %}{% if business_email %}<br />联系邮箱：{{
+                  business_email }}{% endif %}<br />
+                  ----------------------------------------
+                </p>
+              </td>
+            </tr>
+            {% endif %}
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

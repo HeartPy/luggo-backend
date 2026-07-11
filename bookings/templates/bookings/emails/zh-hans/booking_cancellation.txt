@@ -1,0 +1,37 @@
+{{ customer_name }} 您好：
+
+您预约的行李配送服务已按以下内容取消，特此通知。
+您支付的费用将全额退款。
+退款到账时间因发卡机构而异，可能需要数天至两周左右。
+
+■ 预约编号
+  {{ booking_number }}
+
+■ 取件
+  地点：{{ pickup_location_name }}
+  地址：{{ pickup_location_address }}
+  取件日期：{{ pickup_date }}
+
+■ 送达
+  地点：{{ delivery_location_name }}
+  地址：{{ delivery_location_address }}
+  送达日期：{{ delivery_date }}
+
+■ 行李
+{% for item in luggage_lines %}
+  ・{{ item.label }} × {{ item.count }}件
+{% endfor %}
+■ 预计退款金额
+  ¥{{ total_amount_display }}（含税）
+
+如有任何疑问，请与我们联系。
+
+※本邮件为系统自动发送，请勿直接回复。
+{% if business_name %}
+----------------------------------------
+{{ business_name }}{% if business_address %}
+{{ business_address }}{% endif %}{% if business_phone %}
+联系电话：{{ business_phone }}{% endif %}{% if business_email %}
+联系邮箱：{{ business_email }}{% endif %}
+----------------------------------------
+{% endif %}

@@ -107,11 +107,11 @@ def _serialize_booking(booking: LuggageBooking) -> dict[str, Any]:
         ),
         'driver': str(booking.driver_id) if booking.driver_id else None,
         'driver_name': _driver_display_name(booking.driver) if booking.driver_id else None,
-        'pickup_location_name': booking.pickup_location_name,
-        'pickup_location_address': booking.pickup_location_address,
+        'pickup_location_name': booking.pickup_location_name_display,
+        'pickup_location_address': booking.pickup_location_address_display,
         'pickup_date': booking.pickup_date.isoformat() if booking.pickup_date else None,
-        'delivery_location_name': booking.delivery_location_name,
-        'delivery_location_address': booking.delivery_location_address,
+        'delivery_location_name': booking.delivery_location_name_display,
+        'delivery_location_address': booking.delivery_location_address_display,
         'delivery_date': booking.delivery_date.isoformat() if booking.delivery_date else None,
         'luggage_items': items,
         'total_luggage_count': _total_luggage_count(items),
@@ -327,7 +327,9 @@ def _apply_filters(
         queryset = queryset.filter(
             Q(customer_name__icontains=keyword)
             | Q(pickup_location_name__icontains=keyword)
+            | Q(pickup_location_name_ja__icontains=keyword)
             | Q(delivery_location_name__icontains=keyword)
+            | Q(delivery_location_name_ja__icontains=keyword)
         )
 
     # 配達状況での絞り込み（有効な値のみ適用）
@@ -807,11 +809,11 @@ def export_bookings_csv(request: Request) -> HttpResponse:
             booking.customer_phone_number,
             _nationality_label(booking.customer_nationality),
             booking.guest_name,
-            booking.pickup_location_name,
-            booking.pickup_location_address,
+            booking.pickup_location_name_display,
+            booking.pickup_location_address_display,
             _format_date(booking.pickup_date),
-            booking.delivery_location_name,
-            booking.delivery_location_address,
+            booking.delivery_location_name_display,
+            booking.delivery_location_address_display,
             _format_date(booking.delivery_date),
         ]
         for key in LUGGAGE_KEYS:
