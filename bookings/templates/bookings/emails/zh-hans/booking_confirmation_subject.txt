@@ -1,0 +1,1 @@
+【{% if business_name %}{{ business_name }}{% else %}行李配送服务{% endif %}】预约完成通知

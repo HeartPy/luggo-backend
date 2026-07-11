@@ -1,0 +1,44 @@
+{{ customer_name }} 您好：
+
+感謝您使用行李配送服務。
+您的預約已確認，詳情如下。
+
+■ 預約編號
+  {{ booking_number }}
+
+■ 取件
+  地點：{{ pickup_location_name }}
+  地址：{{ pickup_location_address }}
+  取件日期：{{ pickup_date }}
+
+■ 送達
+  地點：{{ delivery_location_name }}
+  地址：{{ delivery_location_address }}
+  送達日期：{{ delivery_date }}
+
+■ 行李{% for item in luggage_lines %}
+  ・{{ item.label }} × {{ item.count }}件{% endfor %}
+
+■ 支付金額
+  ¥{{ total_amount_display }}（含稅）
+{% if notes %}
+■ 備註
+  {{ notes }}
+{% endif %}
+如需查詢或取消預約，請備妥預約編號，
+並透過以下連結辦理。
+{% if status_url %}
+▼ 預約狀態查詢頁面
+{{ status_url }}
+{% endif %}
+如有任何疑問，請與我們聯繫。
+
+※本郵件為系統自動發送，請勿直接回覆。
+{% if business_name %}
+----------------------------------------
+{{ business_name }}{% if business_address %}
+{{ business_address }}{% endif %}{% if business_phone %}
+聯絡電話：{{ business_phone }}{% endif %}{% if business_email %}
+聯絡信箱：{{ business_email }}{% endif %}
+----------------------------------------
+{% endif %}

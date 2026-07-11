@@ -30,18 +30,56 @@ from .models import LuggageBooking
 
 logger = logging.getLogger(__name__)
 
-# 荷物タイプのキーと表示名の対応（メール本文の表示に使用）
-LUGGAGE_TYPE_LABELS: dict[str, str] = {
-    "cabin": "機内持ち込みサイズ（3辺計：〜120cm）",
-    "checked": "受託手荷物サイズ（3辺計：〜160cm）",
-    "oversize": "規格外サイズ（3辺計：〜180cm）",
+# 荷物タイプのキーと表示名の対応（メール本文の表示に使用・言語別）
+LUGGAGE_TYPE_LABELS: dict[str, dict[str, str]] = {
+    "ja": {
+        "cabin": "機内持ち込みサイズ（3辺計：〜120cm）",
+        "checked": "受託手荷物サイズ（3辺計：〜160cm）",
+        "oversize": "規格外サイズ（3辺計：〜180cm）",
+    },
+    "en": {
+        "cabin": "Carry-on size (total of 3 sides: up to 120 cm)",
+        "checked": "Checked-baggage size (total of 3 sides: up to 160 cm)",
+        "oversize": "Oversize (total of 3 sides: up to 180 cm)",
+    },
+    "zh-Hans": {
+        "cabin": "随身行李尺寸（三边合计：120cm以内）",
+        "checked": "托运行李尺寸（三边合计：160cm以内）",
+        "oversize": "超规格尺寸（三边合计：180cm以内）",
+    },
+    "zh-Hant": {
+        "cabin": "隨身行李尺寸（三邊合計：120cm以內）",
+        "checked": "託運行李尺寸（三邊合計：160cm以內）",
+        "oversize": "超規格尺寸（三邊合計：180cm以內）",
+    },
 }
 
 _TEMPLATE_DIR = "bookings/emails"
 
+# 顧客の表示言語 → テンプレートのサブディレクトリ名
+# 日本語はルート直下のテンプレートを使用（サブディレクトリなし）
+_EMAIL_LANG_DIRS: dict[str, str] = {
+    "en": "en",
+    "zh-Hans": "zh-hans",
+    "zh-Hant": "zh-hant",
+}
+
+_EN_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def _customer_lang(booking: "LuggageBooking") -> str:
+    """予約に保存された顧客の表示言語"""
+    lang = getattr(booking, "customer_language", "") or "ja"
+    if lang in LUGGAGE_TYPE_LABELS:
+        return lang
+    return "ja"
+
 
 def _render_email(
-    template_base: str, context: dict[str, Any]
+    template_base: str, context: dict[str, Any], lang: str = "ja"
 ) -> tuple[str, str, Optional[str]]:
     """
     件名・テキスト本文・HTML本文（任意）をテンプレートから生成
@@ -50,32 +88,56 @@ def _render_email(
     - `<base>.txt`         : テキスト本文（必須）
     - `<base>.html`        : HTML本文（存在すれば使用、無ければ None）
     """
-    subject = render_to_string(
-        f"{_TEMPLATE_DIR}/{template_base}_subject.txt", context
-    ).strip()
-    body_text = render_to_string(f"{_TEMPLATE_DIR}/{template_base}.txt", context)
+    bases = [template_base]
+    lang_dir = _EMAIL_LANG_DIRS.get(lang)
+    if lang_dir:
+        bases.insert(0, f"{lang_dir}/{template_base}")
+
+    subject = ""
+    body_text = ""
+    resolved_base = template_base
+    for base in bases:
+        try:
+            subject = render_to_string(
+                f"{_TEMPLATE_DIR}/{base}_subject.txt", context
+            ).strip()
+            body_text = render_to_string(f"{_TEMPLATE_DIR}/{base}.txt", context)
+            resolved_base = base
+            break
+        except TemplateDoesNotExist:
+            continue
+    else:
+        subject = render_to_string(
+            f"{_TEMPLATE_DIR}/{template_base}_subject.txt", context
+        ).strip()
+        body_text = render_to_string(f"{_TEMPLATE_DIR}/{template_base}.txt", context)
 
     body_html: Optional[str] = None
     try:
-        body_html = render_to_string(f"{_TEMPLATE_DIR}/{template_base}.html", context)
+        body_html = render_to_string(f"{_TEMPLATE_DIR}/{resolved_base}.html", context)
     except TemplateDoesNotExist:
         body_html = None
 
     return subject, body_text, body_html
 
 
-def _format_date(value: Optional[date_type]) -> str:
-    """日付を「YYYY年MM月DD日」形式に整形"""
+def _format_date(value: Optional[date_type], lang: str = "ja") -> str:
+    """日付を言語に応じた表記に整形"""
     if not value:
         return "-"
-    return f"{value.year}年{value.month:02d}月{value.day:02d}日"
+    if lang == "en":
+        return f"{_EN_MONTH_NAMES[value.month - 1]} {value.day}, {value.year}"
+    return f"{value.year}年{value.month}月{value.day}日"
 
 
-def _luggage_lines(luggage_items: Optional[dict[str, Any]]) -> list[dict[str, str | int]]:
+def _luggage_lines(
+    luggage_items: Optional[dict[str, Any]], lang: str = "ja"
+) -> list[dict[str, str | int]]:
     """荷物の {キー: 個数} を表示用の [{label, count}] に変換"""
     items = luggage_items or {}
+    labels = LUGGAGE_TYPE_LABELS.get(lang, LUGGAGE_TYPE_LABELS["ja"])
     lines: list[dict[str, str | int]] = []
-    for key, label in LUGGAGE_TYPE_LABELS.items():
+    for key, label in labels.items():
         raw = items.get(key, 0)
         try:
             count = int(raw)
@@ -150,19 +212,37 @@ def build_issuer_snapshot(profile: Optional[BusinessProfile]) -> dict[str, str]:
     }
 
 
-def _booking_context(booking: LuggageBooking) -> dict[str, Any]:
-    """予約レコードからメールテンプレート用のコンテキストを組み立て"""
+def _booking_context(
+    booking: LuggageBooking, lang: str = "ja", *, prefer_japanese_locations: bool = False
+) -> dict[str, Any]:
+    """
+    予約レコードからメールテンプレート用のコンテキストを組み立て
+
+    prefer_japanese_locations=True のとき（配達者向けなど）は、
+    場所名・住所を日本語表記（_ja）優先で入れる。
+    """
     profile = booking.business_owner
+    if prefer_japanese_locations:
+        pickup_name = booking.pickup_location_name_display
+        pickup_address = booking.pickup_location_address_display
+        delivery_name = booking.delivery_location_name_display
+        delivery_address = booking.delivery_location_address_display
+    else:
+        pickup_name = booking.pickup_location_name
+        pickup_address = booking.pickup_location_address
+        delivery_name = booking.delivery_location_name
+        delivery_address = booking.delivery_location_address
+
     context: dict[str, Any] = {
         "booking_number": booking.booking_number,
         "customer_name": booking.customer_name,
-        "pickup_location_name": booking.pickup_location_name,
-        "pickup_location_address": booking.pickup_location_address,
-        "pickup_date": _format_date(booking.pickup_date),
-        "delivery_location_name": booking.delivery_location_name,
-        "delivery_location_address": booking.delivery_location_address,
-        "delivery_date": _format_date(booking.delivery_date),
-        "luggage_lines": _luggage_lines(booking.luggage_items),
+        "pickup_location_name": pickup_name,
+        "pickup_location_address": pickup_address,
+        "pickup_date": _format_date(booking.pickup_date, lang),
+        "delivery_location_name": delivery_name,
+        "delivery_location_address": delivery_address,
+        "delivery_date": _format_date(booking.delivery_date, lang),
+        "luggage_lines": _luggage_lines(booking.luggage_items, lang),
         "total_amount_display": f"{booking.total_amount:,}",
         "notes": booking.notes,
         "status_url": (
@@ -188,9 +268,10 @@ def send_booking_confirmation_email(booking: LuggageBooking) -> bool:
         )
         return False
 
+    lang = _customer_lang(booking)
     try:
-        context = _booking_context(booking)
-        subject, text, html = _render_email("booking_confirmation", context)
+        context = _booking_context(booking, lang)
+        subject, text, html = _render_email("booking_confirmation", context, lang)
     except Exception:
         logger.exception(
             "予約確認メールの組み立てに失敗しました: booking_id=%s", booking.id
@@ -239,9 +320,10 @@ def send_booking_cancellation_email_to_customer(
     template_base = (
         "booking_cancellation" if refunded else "booking_cancellation_no_refund"
     )
+    lang = _customer_lang(booking)
     try:
-        context = _booking_context(booking)
-        subject, text, html = _render_email(template_base, context)
+        context = _booking_context(booking, lang)
+        subject, text, html = _render_email(template_base, context, lang)
     except Exception:
         logger.exception(
             "顧客向けキャンセル通知メールの組み立てに失敗しました: booking_id=%s",
@@ -268,7 +350,8 @@ def send_booking_cancellation_email_to_driver(booking: LuggageBooking) -> bool:
         return False
 
     try:
-        context = _booking_context(booking)
+        # 配達者向けは常に日本語（場所は日本語表記を優先）
+        context = _booking_context(booking, "ja", prefer_japanese_locations=True)
         context["driver_name"] = driver_name
         subject, text, html = _render_email("booking_cancellation_driver", context)
     except Exception:

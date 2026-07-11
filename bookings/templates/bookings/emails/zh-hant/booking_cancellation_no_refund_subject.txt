@@ -1,0 +1,1 @@
+【{% if business_name %}{{ business_name }}{% else %}行李配送服務{% endif %}】預約取消通知

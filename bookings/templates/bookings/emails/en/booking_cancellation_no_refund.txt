@@ -1,0 +1,32 @@
+Dear {{ customer_name }},
+
+We would like to inform you that your luggage delivery booking below has been cancelled.
+Please note that, in accordance with our cancellation policy, this cancellation is not eligible for a refund.
+
+■ Booking Number
+  {{ booking_number }}
+
+■ Pickup
+  Location: {{ pickup_location_name }}
+  Address: {{ pickup_location_address }}
+  Pickup date: {{ pickup_date }}
+
+■ Delivery
+  Location: {{ delivery_location_name }}
+  Address: {{ delivery_location_address }}
+  Delivery date: {{ delivery_date }}
+
+■ Luggage{% for item in luggage_lines %}
+  - {{ item.label }} × {{ item.count }}{% endfor %}
+
+If you have any questions, please contact us.
+
+* This is a send-only email address. Replies to this message cannot be answered.
+{% if business_name %}
+----------------------------------------
+{{ business_name }}{% if business_address %}
+{{ business_address }}{% endif %}{% if business_phone %}
+Contact phone: {{ business_phone }}{% endif %}{% if business_email %}
+Contact email: {{ business_email }}{% endif %}
+----------------------------------------
+{% endif %}

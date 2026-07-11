@@ -70,6 +70,19 @@ class LuggageBooking(models.Model):
     pickup_location_address = models.TextField(
         verbose_name='集荷場所の住所'
     )
+    pickup_location_name_ja = models.CharField(
+        max_length=200,
+        blank=True,
+        default='',
+        verbose_name='集荷場所の名称（日本語）',
+        help_text='非日本語で予約された場合の日本語表記（事業者の予約一覧用）',
+    )
+    pickup_location_address_ja = models.TextField(
+        blank=True,
+        default='',
+        verbose_name='集荷場所の住所（日本語）',
+        help_text='非日本語で予約された場合の日本語表記（事業者の予約一覧用）',
+    )
     pickup_date = models.DateField(
         verbose_name='集荷日'
     )
@@ -81,6 +94,19 @@ class LuggageBooking(models.Model):
     )
     delivery_location_address = models.TextField(
         verbose_name='配送場所の住所'
+    )
+    delivery_location_name_ja = models.CharField(
+        max_length=200,
+        blank=True,
+        default='',
+        verbose_name='配送場所の名称（日本語）',
+        help_text='非日本語で予約された場合の日本語表記（事業者の予約一覧用）',
+    )
+    delivery_location_address_ja = models.TextField(
+        blank=True,
+        default='',
+        verbose_name='配送場所の住所（日本語）',
+        help_text='非日本語で予約された場合の日本語表記（事業者の予約一覧用）',
     )
     delivery_date = models.DateField(
         verbose_name='配送日'
@@ -111,7 +137,7 @@ class LuggageBooking(models.Model):
         verbose_name='メールアドレス'
     )
     customer_phone_number = models.CharField(
-        max_length=15,
+        max_length=16,
         verbose_name='電話番号'
     )
     customer_nationality = models.CharField(
@@ -121,6 +147,19 @@ class LuggageBooking(models.Model):
     guest_name = models.CharField(
         max_length=200,
         verbose_name='宿泊予約者名'
+    )
+    # 旅行客が予約時に選択した表示言語（メール送信の言語判定に使用）
+    CUSTOMER_LANGUAGE_CHOICES = [
+        ('ja', '日本語'),
+        ('en', '英語'),
+        ('zh-Hans', '中国語（簡体字）'),
+        ('zh-Hant', '中国語（繁体字）'),
+    ]
+    customer_language = models.CharField(
+        max_length=10,
+        choices=CUSTOMER_LANGUAGE_CHOICES,
+        default='ja',
+        verbose_name='顧客の表示言語',
     )
 
     # 支払い情報
@@ -296,6 +335,25 @@ class LuggageBooking(models.Model):
         if self.pickup_date >= today:
             return (self.pickup_date - today).days
         return 0
+
+    # 事業者向け表示（日本語優先）
+    # 事業者の予約一覧・CSV では日本語表記（_ja）があればそちらを優先
+
+    @property
+    def pickup_location_name_display(self) -> str:
+        return self.pickup_location_name_ja or self.pickup_location_name
+
+    @property
+    def pickup_location_address_display(self) -> str:
+        return self.pickup_location_address_ja or self.pickup_location_address
+
+    @property
+    def delivery_location_name_display(self) -> str:
+        return self.delivery_location_name_ja or self.delivery_location_name
+
+    @property
+    def delivery_location_address_display(self) -> str:
+        return self.delivery_location_address_ja or self.delivery_location_address
 
 
 class PendingBooking(models.Model):

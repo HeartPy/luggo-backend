@@ -365,6 +365,13 @@ class BusinessAccountRegistrationSerializer(serializers.Serializer[BusinessAccou
         required=True,
     )
 
+    def validate_phone(self, value: str) -> str:
+        """電話番号のバリデーション：国内形式（10〜11桁の数字のみ）"""
+        normalized = re.sub(r'[\s-]', '', value)
+        if not re.fullmatch(r'\d{10,11}', normalized):
+            raise serializers.ValidationError('有効な電話番号を入力してください。')
+        return normalized
+
     def validate_password(self, value: str) -> str:
         """パスワードのバリデーション：半角英数字+記号、8文字以上16文字以内、3種類以上"""
         validation_error = validate_password_strength(value)
