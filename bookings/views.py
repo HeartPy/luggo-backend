@@ -635,6 +635,22 @@ def materialize_booking(
         raise
 
 
+def _resolve_business_from_payment_intent(payment_intent: Any) -> Optional[BusinessProfile]:
+    """
+    PaymentIntent の metadata.business_owner_id から担当事業者を逆引き
+    """
+    metadata = getattr(payment_intent, 'metadata', None) or {}
+    owner_id = str(
+        (metadata.get('business_owner_id') if hasattr(metadata, 'get') else '') or ''
+    ).strip()
+    if not owner_id:
+        return None
+    try:
+        return BusinessProfile.objects.get(id=owner_id)
+    except (BusinessProfile.DoesNotExist, ValueError, TypeError):
+        return None
+
+
 def _mark_pending_booking_consumed(payment_intent_id: str) -> None:
     """フォールバック用 PendingBooking を消費済みにする"""
     try:
@@ -748,38 +764,14 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
                     )
 
                 # 予約を担当する事業者を PaymentIntent から逆引き。
-                # create-payment-intent 時に transfer_data.destination = business_profile.stripe_account_id を
-                # サーバー側で設定しているため、ここを真とすればクライアントの business_owner_id 改ざんを
-                # 受け付けず、決済の着金先と予約レコードの紐付けが必ず一致する。
-                transfer_data = getattr(payment_intent, 'transfer_data', None)
-                destination_account_id = ''
-                if transfer_data is not None:
-                    destination_account_id = (
-                        getattr(transfer_data, 'destination', '')
-                        or (transfer_data.get('destination', '') if isinstance(transfer_data, dict) else '')
-                        or ''
-                    )
-                destination_account_id = (destination_account_id or '').strip()
-
-                if not destination_account_id:
+                # create-payment-intent 時に metadata.business_owner_id をサーバー側で
+                # 設定しているため、ここを真とすればクライアントの business_owner_id
+                # 改ざんを受け付けず、決済と予約レコードの紐付けが必ず一致する。
+                business_profile = _resolve_business_from_payment_intent(payment_intent)
+                if business_profile is None:
                     logger.error(
-                        f"PaymentIntent に transfer_data.destination が設定されていません: "
+                        f"PaymentIntent に対応する事業者が特定できません: "
                         f"payment_intent_id={mask_sensitive_id(payment_intent_id)}"
-                    )
-                    return Response(
-                        {'errMsg': '決済情報の確認に失敗しました。'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                try:
-                    business_profile = BusinessProfile.objects.get(
-                        stripe_account_id=destination_account_id,
-                    )
-                except BusinessProfile.DoesNotExist:
-                    logger.error(
-                        f"transfer_data.destination に対応する事業者が見つかりません: "
-                        f"payment_intent_id={mask_sensitive_id(payment_intent_id)}, "
-                        f"destination={mask_sensitive_id(destination_account_id)}"
                     )
                     return Response(
                         {'errMsg': '決済情報の確認に失敗しました。'},
@@ -1232,9 +1224,6 @@ def create_payment_intent(request: Request) -> Response:
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 決済金額の10%
-        platform_fee = int(amount_in_yen * 0.1)
-
         # 顧客情報を取得
         customer_name = request.data.get('customer_name', '')
         customer_email = request.data.get('customer_email', '')
@@ -1438,10 +1427,14 @@ def create_payment_intent(request: Request) -> Response:
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Payment Intent作成パラメータを準備
+        # Payment Intent作成パラメータを準備。
+        # 決済はプラットフォームアカウントで受け（destination charge を使わない）、
+        # 事業者への資金移動は配達完了時の Stripe Transfer で行う（bookings/transfers.py）。
+        # 担当事業者は metadata.business_owner_id をサーバー側で設定して紐付ける。
         payment_intent_params = {
             'amount': amount_in_yen,
             'currency': 'jpy',
+            'on_behalf_of': connected_account_id,
             'automatic_payment_methods': {
                 'enabled': True,
             },
@@ -1450,13 +1443,9 @@ def create_payment_intent(request: Request) -> Response:
                     'request_three_d_secure': 'automatic',
                 },
             },
-            'on_behalf_of': connected_account_id,
-            'application_fee_amount': platform_fee,
-            'transfer_data': {
-                'destination': connected_account_id,
-            },
             'metadata': {
-                key: str(count) for key, count in luggage_counts.items()
+                'business_owner_id': str(business_profile.id),
+                **{key: str(count) for key, count in luggage_counts.items()},
             },
         }
 
@@ -1591,18 +1580,11 @@ def _notify_unmatched_payment(payment_intent: Any) -> bool:
         except (ValueError, TypeError, OSError):
             created_iso = None
 
-    # 事業者を transfer_data.destination（Stripe Connect アカウントID）から逆引きする
+    # 事業者を metadata.business_owner_id から逆引きする
     business_name: Optional[str] = None
-    transfer_data = payment_intent.get('transfer_data') or {}
-    destination = (
-        transfer_data.get('destination') if hasattr(transfer_data, 'get') else None
-    )
-    if destination:
-        try:
-            business_profile = BusinessProfile.objects.get(stripe_account_id=destination)
-            business_name = business_profile.company_name
-        except BusinessProfile.DoesNotExist:
-            business_name = None
+    business_profile = _resolve_business_from_payment_intent(payment_intent)
+    if business_profile is not None:
+        business_name = business_profile.company_name
 
     logger.error(
         "未照合の成功決済を検知（対応する予約レコードなし）: payment_intent_id=%s, amount=%s",
@@ -2098,8 +2080,8 @@ def stripe_webhook(request: Request) -> Response:
     charge.dispute.created / charge.dispute.closed（チャージバックの記録・運営通知）、
      charge.refunded / refund.updated（返金状態の整合性担保）も処理する。
 
-    PaymentIntent はプラットフォームアカウント上で destination charge として作成して
-    いるため、本 Webhook はプラットフォームアカウントに対して設定する。
+    PaymentIntent はプラットフォームアカウント上で作成しているため、本 Webhook は
+    プラットフォームアカウントに対して設定する。
     """
     webhook_secret = settings.STRIPE_WEBHOOK_SECRET
     if not webhook_secret:

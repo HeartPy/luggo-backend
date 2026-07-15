@@ -15,6 +15,7 @@ urlpatterns: list[URLPattern] = [
     path('bookings/export', booking_owner_views.export_bookings_csv, name='business_bookings_export'),
     path('bookings/<uuid:booking_id>', booking_owner_views.update_booking, name='business_bookings_update'),
     path('drivers', booking_owner_views.list_drivers, name='business_drivers_list'),
+    path('revenue', views.revenue_summary, name='business_revenue_summary'),
     path('profile/pricing', views.update_profile_pricing, name='update_profile_pricing'),
     path('profile/pricing/draft', views.pricing_draft, name='pricing_draft'),
     path('profile/settings', views.business_settings, name='business_settings'),

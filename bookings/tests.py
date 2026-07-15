@@ -1,10 +1,16 @@
 from django.test import TestCase
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework.test import APITestCase
 from rest_framework import status
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone as dt_timezone
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from business_owners.models import BusinessProfile
 from .models import LuggageBooking
+from .transfers import create_transfer_for_delivered_booking, transfer_payout_amount
 
 User = get_user_model()
 
@@ -100,12 +106,24 @@ class LuggageBookingAPITest(BaseBookingTest, APITestCase):
     """荷物配送予約APIのテスト"""
 
     def setUp(self):
-        # Arrange: テスト用ユーザーを作成
+        # Arrange: テスト用ユーザーと事業者を作成
         self.user = self._create_test_user()
+        self.profile = BusinessProfile.objects.create(
+            user=self.user,
+            company_name='テスト事業者',
+            company_email='owner@example.com',
+            stripe_account_id='acct_test',
+        )
 
-    def test_create_booking(self):
-        """予約作成APIのテスト"""
-        # Arrange: APIエンドポイントURL準備
+    @patch('bookings.views.stripe.PaymentIntent.retrieve')
+    def test_create_booking(self, retrieve_mock):
+        """予約作成APIのテスト（決済完了済みの PaymentIntent から予約を確定する）"""
+        # Arrange: 決済完了済みの PaymentIntent をモック
+        retrieve_mock.return_value = SimpleNamespace(
+            status='succeeded',
+            amount=2000,
+            metadata={'business_owner_id': str(self.profile.id)},
+        )
         url = reverse('bookings:booking-create')
 
         # Act: 予約作成APIを呼び出し
@@ -120,6 +138,8 @@ class LuggageBookingAPITest(BaseBookingTest, APITestCase):
         # Assert: 作成された予約データの検証
         booking = LuggageBooking.objects.first()
         self.assertEqual(booking.pickup_location_name, '東京駅')
+        self.assertEqual(booking.business_owner, self.profile)
+        self.assertEqual(booking.total_amount, 2000)
 
     def test_create_booking_invalid_date(self):
         """無効な日付での予約作成テスト"""
@@ -134,3 +154,97 @@ class LuggageBookingAPITest(BaseBookingTest, APITestCase):
 
         # Assert: バリデーションエラーが返されることを確認
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class DeliveryTransferTest(BaseBookingTest, TestCase):
+    """配達完了時の事業者への送金処理のテスト"""
+
+    def setUp(self):
+        # Arrange: テスト用ユーザーと事業者を作成
+        self.user = self._create_test_user()
+        self.profile = BusinessProfile.objects.create(
+            user=self.user,
+            company_name='テスト事業者',
+            company_email='owner@example.com',
+            stripe_account_id='acct_test',
+        )
+
+    def _delivered_booking(self, **kwargs):
+        defaults = {
+            'business_owner': self.profile,
+            'delivery_status': 'delivered',
+            'delivered_at': timezone.now(),
+            'total_amount': 10_000,
+        }
+        defaults.update(kwargs)
+        return self._create_test_booking(**defaults)
+
+    def test_transfer_payout_amount(self):
+        """送金額は合計金額からプラットフォーム手数料（10%）を差し引いた金額"""
+        # Arrange: 配達完了済みの予約を作成
+        booking = self._delivered_booking()
+
+        # Act & Assert: 送金額が手数料差し引き後の金額であることを確認
+        self.assertEqual(transfer_payout_amount(booking), 9_000)
+
+    @patch('bookings.transfers.stripe.Transfer.create')
+    @patch('bookings.transfers.stripe.PaymentIntent.retrieve')
+    def test_creates_transfer_and_records_availability(
+        self, retrieve_mock, transfer_mock
+    ):
+        """配達完了予約の送金を作成し、入金可能日時を記録"""
+        # Arrange: 決済・送金 API をモックし、配達完了済みの予約を作成
+        available_on = 1782000000  # 2026-06-21 UTC
+        retrieve_mock.return_value = {
+            'latest_charge': {
+                'id': 'ch_test_1',
+                'balance_transaction': {'available_on': available_on},
+            },
+        }
+        transfer_mock.return_value = {'id': 'tr_test_1'}
+        booking = self._delivered_booking()
+
+        # Act: 事業者への送金を実行
+        result = create_transfer_for_delivered_booking(booking)
+
+        # Assert: 送金作成と予約への記録を検証
+        self.assertTrue(result)
+        transfer_mock.assert_called_once()
+        self.assertEqual(transfer_mock.call_args.kwargs['amount'], 9_000)
+        self.assertEqual(transfer_mock.call_args.kwargs['destination'], 'acct_test')
+        self.assertEqual(
+            transfer_mock.call_args.kwargs['source_transaction'], 'ch_test_1'
+        )
+        booking.refresh_from_db()
+        self.assertEqual(booking.stripe_transfer_id, 'tr_test_1')
+        self.assertIsNotNone(booking.transferred_at)
+        self.assertEqual(
+            booking.funds_available_on,
+            datetime.fromtimestamp(available_on, tz=dt_timezone.utc),
+        )
+
+    @patch('bookings.transfers.stripe.Transfer.create')
+    @patch('bookings.transfers.stripe.PaymentIntent.retrieve')
+    def test_skips_when_already_transferred(self, retrieve_mock, transfer_mock):
+        """送金済みの予約には二重送金しない"""
+        # Arrange: すでに送金済みの予約を作成
+        booking = self._delivered_booking(stripe_transfer_id='tr_done')
+
+        # Act: 送金処理を再実行
+        result = create_transfer_for_delivered_booking(booking)
+
+        # Assert: 成功扱いだが Stripe API は呼ばれないことを確認
+        self.assertTrue(result)
+        retrieve_mock.assert_not_called()
+        transfer_mock.assert_not_called()
+
+    def test_skips_when_not_delivered(self):
+        """配達完了前の予約は送金しない"""
+        # Arrange: 未配達の予約を作成
+        booking = self._create_test_booking(
+            business_owner=self.profile,
+            total_amount=10_000,
+        )
+
+        # Act & Assert: 送金がスキップされることを確認
+        self.assertFalse(create_transfer_for_delivered_booking(booking))
