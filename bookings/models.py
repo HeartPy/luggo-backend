@@ -204,6 +204,30 @@ class LuggageBooking(models.Model):
         verbose_name='返金整合性チェック日時',
     )
 
+    # 配達完了と事業者への送金情報
+    delivered_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='配達完了日時',
+    )
+    stripe_transfer_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='Stripe Transfer ID',
+    )
+    transferred_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='事業者への送金日時',
+    )
+    # 決済資金が Stripe 上で入金可能になる日時
+    funds_available_on = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='Stripe資金の入金可能日時',
+    )
+
     # 発行者情報のスナップショット。
     # 決済確定時点の事業者名・住所・連絡先を保存し、領収書はこの値を優先して使用する。
     issuer_name = models.CharField(
@@ -255,6 +279,7 @@ class LuggageBooking(models.Model):
             models.Index(fields=['pickup_date']),
             models.Index(fields=['delivery_date']),
             models.Index(fields=['customer_name']),
+            models.Index(fields=['delivered_at']),
         ]
         constraints = [
             # 同一決済（payment_intent_id）に対する予約の二重作成を DB レベルで防ぐ
@@ -561,6 +586,7 @@ class BookingAuditLog(models.Model):
     ACTION_REFUND_CANCELED = 'refund_canceled'
     ACTION_BOOKING_CANCELLED = 'booking_cancelled'
     ACTION_RECONCILED = 'reconciled'
+    ACTION_TRANSFER_CREATED = 'transfer_created'
     ACTION_CHOICES = [
         (ACTION_REFUND_REQUESTED, '返金リクエスト'),
         (ACTION_REFUND_SUCCEEDED, '返金完了'),
@@ -569,6 +595,7 @@ class BookingAuditLog(models.Model):
         (ACTION_REFUND_CANCELED, '返金取消'),
         (ACTION_BOOKING_CANCELLED, '予約キャンセル'),
         (ACTION_RECONCILED, '整合性同期'),
+        (ACTION_TRANSFER_CREATED, '事業者への送金'),
     ]
 
     booking = models.ForeignKey(

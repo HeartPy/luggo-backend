@@ -32,6 +32,7 @@ from .emails import send_booking_cancellation_emails
 from .models import BookingAuditLog, LuggageBooking
 from .refunds import log_booking_event, record_api_refund_result
 from .serializers import OwnerBookingUpdateSerializer
+from .transfers import create_transfer_for_delivered_booking
 
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -422,8 +423,16 @@ def update_booking_statuses(request: Request) -> Response:
             continue
         if booking.delivery_status != new_status:
             booking.delivery_status = new_status
-            booking.save(update_fields=['delivery_status', 'updated_at'])
+            update_fields = ['delivery_status', 'updated_at']
+            # 初めて配達完了になった日時を記録（売上集計の基準になる）
+            if new_status == 'delivered' and booking.delivered_at is None:
+                booking.delivered_at = timezone.now()
+                update_fields.append('delivered_at')
+            booking.save(update_fields=update_fields)
             updated_count += 1
+        # 配達完了した予約は事業者への送金を実行（送金済み・失敗時は内部で判定）
+        if booking.delivery_status == 'delivered':
+            create_transfer_for_delivered_booking(booking)
 
     return Response(
         {'message': '配達状況を保存しました。', 'updated_count': updated_count},
@@ -559,6 +568,15 @@ def update_booking(request: Request, booking_id: str) -> Response:
 
     serializer.save()
     booking.refresh_from_db()
+
+    if booking.delivery_status == 'delivered':
+        # 初めて配達完了になった日時を記録（売上集計の基準になる）
+        if booking.delivered_at is None:
+            booking.delivered_at = timezone.now()
+            booking.save(update_fields=['delivered_at', 'updated_at'])
+        # 配達完了した予約は事業者への送金を実行（送金済み・失敗時は内部で判定）
+        create_transfer_for_delivered_booking(booking)
+
     return Response(
         {'message': '予約を更新しました。', 'booking': _serialize_booking(booking)},
         status=status.HTTP_200_OK,
@@ -571,8 +589,6 @@ def _refund_booking_payment(
 ) -> bool:
     """
     予約に対応する Stripe 決済を全額返金する
-
-    連結アカウントへ移動した資金とプラットフォーム手数料の双方から資金を引き戻す。
 
     返金 API の結果（Refund ID・状態・金額）は予約レコードに保存し、監査ログにも
     記録する。これにより、この直後にアプリが落ちて delivery_status を更新できなくても、
@@ -592,8 +608,6 @@ def _refund_booking_payment(
     try:
         refund = stripe.Refund.create(
             payment_intent=payment_intent_id,
-            reverse_transfer=True,
-            refund_application_fee=True,
             metadata={'booking_id': str(booking.id)},
             # 同一予約の二重返金を防ぐ（再試行時も同じ結果が返る）
             idempotency_key=f'booking_cancel_refund_{booking.id}',

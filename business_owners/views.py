@@ -40,6 +40,7 @@ from .utils import (
     send_registration_completed_emails,
 )
 from .stripe_info import get_business_stripe_info
+from .revenue import calculate_monthly_revenue, list_payout_history
 
 
 User = get_user_model()
@@ -2023,6 +2024,68 @@ def get_current_business_profile(request: Request) -> Response:
             exc_info=True
         )
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def revenue_summary(request: Request) -> Response:
+    """事業者の月別売上と Stripe からの入金履歴を返す"""
+    if not hasattr(request.user, 'business_profile'):
+        return Response(
+            {'error': '事業者情報が見つかりません。'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    selected_month = str(request.query_params.get('month', '') or '').strip()
+    if not selected_month:
+        today = timezone.localdate()
+        selected_month = f'{today.year:04d}-{today.month:02d}'
+    if not re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])', selected_month):
+        return Response(
+            {'error': 'month は YYYY-MM 形式で指定してください。'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    history_months_raw = str(
+        request.query_params.get('history_months', '3') or '3'
+    )
+    if history_months_raw not in {'3', '12'}:
+        return Response(
+            {'error': 'history_months は 3 または 12 を指定してください。'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    year, month = (int(part) for part in selected_month.split('-'))
+    profile = request.user.business_profile
+    revenue = calculate_monthly_revenue(profile, year, month)
+
+    payouts_error = False
+    try:
+        payouts, has_more_payouts = list_payout_history(
+            profile,
+            int(history_months_raw),
+        )
+    except stripe.error.StripeError:  # type: ignore[attr-defined]
+        logger.warning(
+            'Stripe入金履歴の取得に失敗しました: profile_id=%s',
+            mask_sensitive_id(profile.id),
+            exc_info=True,
+        )
+        payouts = []
+        has_more_payouts = False
+        payouts_error = True
+
+    return Response(
+        {
+            'selected_month': selected_month,
+            **revenue,
+            'payouts': payouts,
+            'has_more_payouts': has_more_payouts,
+            'payouts_error': payouts_error,
+            'has_stripe_account': bool(profile.stripe_account_id),
+        },
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(['POST'])
