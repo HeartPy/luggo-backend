@@ -1,0 +1,1 @@
+【LugGo】{{ payout_date }}支払分の請求書・支払明細

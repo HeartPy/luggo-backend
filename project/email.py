@@ -13,11 +13,12 @@
 本番では Resend、開発では EMAIL_BACKEND を通る。
 """
 
+import base64
 import logging
 from typing import Optional
 import requests
 from django.conf import settings
-from django.core.mail import send_mail
+from django.core.mail import EmailMultiAlternatives, send_mail
 
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ def send_email(
     to: str | list[str],
     html: Optional[str] = None,
     from_email: Optional[str] = None,
+    attachments: Optional[list[tuple[str, bytes, str]]] = None,
 ) -> bool:
     """
     メールを送信する。送信に成功したら True を返す。
@@ -95,6 +97,7 @@ def send_email(
             html=html,
             sender=sender,
             recipients=recipients,
+            attachments=attachments or [],
         )
 
     return _send_via_django(
@@ -103,6 +106,7 @@ def send_email(
         html=html,
         sender=sender,
         recipients=recipients,
+        attachments=attachments or [],
     )
 
 
@@ -113,11 +117,12 @@ def _send_via_resend(
     html: Optional[str],
     sender: str,
     recipients: list[str],
+    attachments: list[tuple[str, bytes, str]],
 ) -> bool:
     """Resend の HTTP API でメールを送信"""
     api_key = getattr(settings, "RESEND_API_KEY", "") or ""
 
-    payload: dict[str, str | list[str]] = {
+    payload: dict[str, object] = {
         "from": sender,
         "to": recipients,
         "subject": subject,
@@ -125,6 +130,14 @@ def _send_via_resend(
     }
     if html:
         payload["html"] = html
+    if attachments:
+        payload["attachments"] = [
+            {
+                "filename": filename,
+                "content": base64.b64encode(content).decode("ascii"),
+            }
+            for filename, content, _content_type in attachments
+        ]
 
     try:
         response = requests.post(
@@ -161,17 +174,31 @@ def _send_via_django(
     html: Optional[str],
     sender: str,
     recipients: list[str],
+    attachments: list[tuple[str, bytes, str]],
 ) -> bool:
     """Django の EMAIL_BACKEND（開発時は console など）でメールを送信"""
     try:
-        send_mail(
-            subject=subject,
-            message=text,
-            from_email=sender,
-            recipient_list=recipients,
-            html_message=html,
-            fail_silently=False,
-        )
+        if attachments:
+            message = EmailMultiAlternatives(
+                subject=subject,
+                body=text,
+                from_email=sender,
+                to=recipients,
+            )
+            if html:
+                message.attach_alternative(html, "text/html")
+            for filename, content, content_type in attachments:
+                message.attach(filename, content, content_type)
+            message.send(fail_silently=False)
+        else:
+            send_mail(
+                subject=subject,
+                message=text,
+                from_email=sender,
+                recipient_list=recipients,
+                html_message=html,
+                fail_silently=False,
+            )
     except Exception as e:
         logger.error(
             "メール送信に失敗しました（EMAIL_BACKEND）: subject=%s, error=%s",

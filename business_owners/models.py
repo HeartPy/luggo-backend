@@ -294,6 +294,12 @@ class BusinessProfile(models.Model):
         default="",
         verbose_name='Stripe代表者名キャッシュ',
     )
+    stripe_company_name_en_cache = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        verbose_name='Stripe会社名英語表記キャッシュ',
+    )
     stripe_info_cached_at = models.DateTimeField(
         null=True,
         blank=True,
@@ -389,6 +395,45 @@ class BusinessProfile(models.Model):
         self.is_active = True
         self.deactivated_at = None
         self.save()
+
+
+class PayoutDocumentDelivery(models.Model):
+    """Stripe Payout単位の請求書・支払明細の生成／送信記録"""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    business_profile = models.ForeignKey(
+        BusinessProfile,
+        on_delete=models.PROTECT,
+        related_name='payout_document_deliveries',
+    )
+    stripe_payout_id = models.CharField(max_length=255, unique=True)
+    payout_created_at = models.DateTimeField()
+    arrival_date = models.DateField(null=True, blank=True)
+    payout_amount = models.IntegerField()
+    currency = models.CharField(max_length=3, default='jpy')
+    gross_sales = models.IntegerField(default=0)
+    platform_fee = models.IntegerField(default=0)
+    matched_transfer_amount = models.IntegerField(default=0)
+    adjustment_amount = models.IntegerField(default=0)
+    line_items = models.JSONField(default=list)
+    issuer_name = models.CharField(max_length=255)
+    issuer_address = models.TextField(blank=True, default='')
+    issuer_registration_number = models.CharField(
+        max_length=14,
+        blank=True,
+        default='',
+    )
+    recipient_email = models.EmailField()
+    send_attempts = models.PositiveIntegerField(default=0)
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    last_err = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'payout_document_deliveries'
+        ordering = ['-payout_created_at']
 
 
 class RegistrationToken(models.Model):

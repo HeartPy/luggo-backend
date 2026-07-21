@@ -194,6 +194,26 @@ OPERATIONS_NOTIFICATION_EMAIL = config(
     cast=lambda value: [item.strip() for item in value.split(',') if item.strip()],
 )
 
+# 事業者向け手数料請求書の発行者情報
+PLATFORM_INVOICE_ISSUER_NAME = config(
+    'PLATFORM_INVOICE_ISSUER_NAME',
+    default='LugGo（ラグゴー）運営事務局',
+)
+PLATFORM_INVOICE_ISSUER_ADDRESS = config(
+    'PLATFORM_INVOICE_ISSUER_ADDRESS',
+    default='',
+)
+PLATFORM_INVOICE_REGISTRATION_NUMBER = config(
+    'PLATFORM_INVOICE_REGISTRATION_NUMBER',
+    default='',
+)
+PLATFORM_INVOICE_SEAL_PATH = config(
+    'PLATFORM_INVOICE_SEAL_PATH',
+    default=str(
+        BASE_DIR / 'business_owners' / 'assets' / 'platform_seal.png'
+    ),
+)
+
 # フロントエンドのベースURL
 FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='http://localhost:3000')
 

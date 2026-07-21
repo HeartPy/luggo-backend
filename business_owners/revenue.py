@@ -1,7 +1,5 @@
 """事業者ダッシュボードの売上・Stripe 入金履歴を組み立てる処理"""
 
-from __future__ import annotations
-
 from datetime import date, datetime, timezone as dt_timezone
 import logging
 from typing import Any, Iterable

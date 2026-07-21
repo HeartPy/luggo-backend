@@ -1,0 +1,2 @@
+{% if is_company and company_name %}{{ company_name }}
+{% endif %}{{ rep_name }} 様

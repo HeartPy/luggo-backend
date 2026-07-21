@@ -221,6 +221,16 @@ class LuggageBooking(models.Model):
         blank=True,
         verbose_name='事業者への送金日時',
     )
+    transferred_gross_amount = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name='送金時の返金控除後売上額',
+    )
+    transferred_platform_fee = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name='送金時のプラットフォーム手数料',
+    )
     # 決済資金が Stripe 上で入金可能になる日時
     funds_available_on = models.DateTimeField(
         null=True,
@@ -235,6 +245,12 @@ class LuggageBooking(models.Model):
         blank=True,
         default='',
         verbose_name='発行者名（スナップショット）',
+    )
+    issuer_name_en = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='発行者名英語表記（スナップショット）',
     )
     issuer_address = models.TextField(
         blank=True,
