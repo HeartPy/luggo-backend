@@ -619,6 +619,7 @@ def materialize_booking(
                 luggage_items=luggage_counts,
                 total_amount=total_amount,
                 issuer_name=issuer_snapshot["issuer_name"],
+                issuer_name_en=issuer_snapshot["issuer_name_en"],
                 issuer_address=issuer_snapshot["issuer_address"],
                 issuer_email=issuer_snapshot["issuer_email"],
                 issuer_phone=issuer_snapshot["issuer_phone"],

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from business_owners.models import BusinessProfile
 from .models import LuggageBooking
-from .transfers import create_transfer_for_delivered_booking, transfer_payout_amount
+from .transfers import create_transfer_for_delivered_booking
 
 User = get_user_model()
 
@@ -179,14 +179,6 @@ class DeliveryTransferTest(BaseBookingTest, TestCase):
         defaults.update(kwargs)
         return self._create_test_booking(**defaults)
 
-    def test_transfer_payout_amount(self):
-        """送金額は合計金額からプラットフォーム手数料（10%）を差し引いた金額"""
-        # Arrange: 配達完了済みの予約を作成
-        booking = self._delivered_booking()
-
-        # Act & Assert: 送金額が手数料差し引き後の金額であることを確認
-        self.assertEqual(transfer_payout_amount(booking), 9_000)
-
     @patch('bookings.transfers.stripe.Transfer.create')
     @patch('bookings.transfers.stripe.PaymentIntent.retrieve')
     def test_creates_transfer_and_records_availability(
@@ -218,6 +210,8 @@ class DeliveryTransferTest(BaseBookingTest, TestCase):
         booking.refresh_from_db()
         self.assertEqual(booking.stripe_transfer_id, 'tr_test_1')
         self.assertIsNotNone(booking.transferred_at)
+        self.assertEqual(booking.transferred_gross_amount, 10_000)
+        self.assertEqual(booking.transferred_platform_fee, 1_000)
         self.assertEqual(
             booking.funds_available_on,
             datetime.fromtimestamp(available_on, tz=dt_timezone.utc),

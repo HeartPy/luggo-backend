@@ -1,4 +1,4 @@
-{{ rep_name }} 様
+{% include "business_owners/emails/_owner_addressee.txt" %}
 
 この度は、LugGo（ラグゴー）へご登録いただき、誠にありがとうございます。
 事業者アカウントの登録が完了しました。

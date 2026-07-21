@@ -2,7 +2,6 @@
 領収書PDFの生成
 
 表記言語は旅行者の表示言語（ja / en / zh-Hans / zh-Hant）に対応する。
-発行事業者の名称・住所は日本語データのため、常に日本語フォントで描画する。
 """
 import io
 import logging
@@ -164,19 +163,21 @@ def _format_yen(amount: int) -> str:
     return f'¥{amount:,}'
 
 
-def _resolve_issuer(booking: LuggageBooking) -> tuple[str, str, str]:
+def _resolve_issuer(booking: LuggageBooking, lang: str) -> tuple[str, str, str]:
     """
     領収書の発行者名・住所・適格請求書登録番号を決定する
 
-    決済確定時に保存した発行者スナップショットを優先する。スナップショットが
-    無い（この機能導入前の予約など）場合のみ、Stripe から取得を試みる。
-    それでも取得できない場合はフォールバック名を用いる。
+    決済確定時に保存した発行者スナップショットを優先する。日本語以外では英語表記を
+    優先し、無ければ日本語名へフォールバックする。
+    必要なスナップショットが無い場合のみ Stripe から取得を試みる。
     """
-    issuer = (booking.issuer_name or '').strip()
+    issuer_ja = (booking.issuer_name or '').strip()
+    issuer_en = (booking.issuer_name_en or '').strip()
     issuer_address = (booking.issuer_address or '').strip()
     invoice_number = (booking.issuer_invoice_number or '').strip()
 
-    if not issuer or not issuer_address:
+    needs_name = not issuer_ja or (lang != 'ja' and not issuer_en)
+    if needs_name or not issuer_address:
         # スナップショット未保存の予約向けフォールバック
         logger.info(
             "領収書: 発行者スナップショットが不足しているためStripeから補完します: booking_id=%s",
@@ -189,10 +190,12 @@ def _resolve_issuer(booking: LuggageBooking) -> tuple[str, str, str]:
                 "領収書: 発行者情報の補完に失敗: booking_id=%s", booking.id
             )
             snapshot = {}
-        issuer = issuer or (snapshot.get('issuer_name') or '').strip()
+        issuer_ja = issuer_ja or (snapshot.get('issuer_name') or '').strip()
+        issuer_en = issuer_en or (snapshot.get('issuer_name_en') or '').strip()
         issuer_address = issuer_address or (snapshot.get('issuer_address') or '').strip()
         invoice_number = invoice_number or (snapshot.get('issuer_invoice_number') or '').strip()
 
+    issuer = issuer_ja if lang == 'ja' else (issuer_en or issuer_ja)
     return issuer or _DEFAULT_ISSUER, issuer_address, invoice_number
 
 
@@ -221,7 +224,7 @@ def build_receipt_pdf(booking: LuggageBooking, lang: Optional[str] = None) -> by
     paid_on = timezone.localtime(booking.created_at) if booking.created_at else None
     paid_label = _format_receipt_date(paid_on, lang)
 
-    issuer, issuer_address, invoice_number = _resolve_issuer(booking)
+    issuer, issuer_address, invoice_number = _resolve_issuer(booking, lang)
     issuer_address_lines = issuer_address.splitlines()
 
     # 発行日・取引日・領収書番号（右上）
@@ -292,7 +295,7 @@ def build_receipt_pdf(booking: LuggageBooking, lang: Optional[str] = None) -> by
             pdf.drawString(left_x + 4 * mm, row_y, label)
             pdf.drawRightString(value_x, row_y, value)
 
-    # 発行事業者（右下）。名称・住所は日本語データのため日本語フォントで描画
+    # 発行事業者（右下）。住所は日本語データのため日本語フォントで描画
     line_height = 6 * mm
     # 発行者名の下に並ぶ行数（住所＋登録番号）に応じて開始位置を上げ、
     # 注記が用紙下端に収まるようにする

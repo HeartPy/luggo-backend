@@ -1,6 +1,6 @@
 """
-事業者の Stripe Connect アカウントに由来する表示用情報（所在地・問い合わせ先・
-代表者名）を取得するモジュール。
+事業者の Stripe Connect アカウントに由来する表示用情報（会社名英語表記・
+所在地・問い合わせ先・代表者名）を取得するモジュール。
 
 Stripe API は障害やレート制限で一時的に失敗しうるため、取得に成功した値は
 BusinessProfile にキャッシュし、失敗時はキャッシュした値へフォールバックする。
@@ -72,6 +72,7 @@ def format_address_kanji(addr: Optional[dict[str, Any]]) -> str:
 
 # get_business_stripe_info が返す辞書のキー
 _INFO_KEYS = (
+    "company_name_en",
     "business_address",
     "support_email",
     "support_phone",
@@ -87,6 +88,8 @@ def _empty_info() -> dict[str, str]:
 def _cached_info(profile: "BusinessProfile") -> dict[str, str]:
     """BusinessProfile にキャッシュ済みの事業者情報を返す"""
     info = _empty_info()
+    if profile.business_type == "company":
+        info["company_name_en"] = profile.stripe_company_name_en_cache or ""
     info["business_address"] = profile.stripe_address_cache or ""
     info["support_email"] = profile.stripe_support_email_cache or ""
     # フォールバック用のため、support_phone ではなく account_phone に入れる
@@ -110,7 +113,9 @@ def _extract_from_account(
 
     business_type = account.get("business_type", "")
     if business_type == "company":
-        addr = (account.get("company") or {}).get("address_kanji") or {}
+        company = account.get("company") or {}
+        info["company_name_en"] = (company.get("name") or "").strip()
+        addr = company.get("address_kanji") or {}
     else:
         addr = (account.get("individual") or {}).get("address_kanji") or {}
     info["business_address"] = format_address_kanji(addr)
@@ -151,6 +156,7 @@ def _update_cache(
     effective_phone = live.get("support_phone") or live.get("account_phone") or ""
 
     updates: dict[str, str] = {
+        "stripe_company_name_en_cache": live.get("company_name_en") or "",
         "stripe_address_cache": live.get("business_address") or "",
         "stripe_support_email_cache": live.get("support_email") or "",
         "stripe_support_phone_cache": effective_phone,
@@ -356,6 +362,7 @@ def get_business_stripe_info(
 
     # 取得できた値を優先し、空の項目はキャッシュ値で補完する
     merged = _empty_info()
+    merged["company_name_en"] = live["company_name_en"] or cached["company_name_en"]
     merged["business_address"] = live["business_address"] or cached["business_address"]
     merged["support_email"] = live["support_email"] or cached["support_email"]
     merged["support_phone"] = live["support_phone"]

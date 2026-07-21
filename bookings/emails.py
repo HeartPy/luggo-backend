@@ -158,10 +158,15 @@ def _phone_from_user(profile: BusinessProfile) -> Optional[str]:
 
 
 def _enrich_business_signature_from_stripe(
-    profile: BusinessProfile, signature: dict[str, Any]
+    profile: BusinessProfile, signature: dict[str, Any], lang: str
 ) -> None:
-    """Stripe Connect アカウント（取得失敗時はキャッシュ）から所在地・問い合わせ先を補完"""
+    """Stripe Connect アカウント（取得失敗時はキャッシュ）から署名情報を補完"""
     info = get_business_stripe_info(profile)
+
+    company_name_en = (info.get("company_name_en") or "").strip()
+    signature["business_name_en"] = company_name_en
+    if lang != "ja" and company_name_en:
+        signature["business_name"] = company_name_en
 
     if info.get("support_email"):
         signature["business_email"] = info["support_email"]
@@ -177,18 +182,21 @@ def _enrich_business_signature_from_stripe(
         signature["business_phone"] = account_phone
 
 
-def _business_signature(profile: Optional[BusinessProfile]) -> dict[str, Any]:
+def _business_signature(
+    profile: Optional[BusinessProfile], lang: str = "ja"
+) -> dict[str, Any]:
     """フッター署名用の担当事業者情報を組み立て"""
     if profile is None:
-        return {"business_name": None}
+        return {"business_name": None, "business_name_en": ""}
 
     signature: dict[str, Any] = {
         "business_name": profile.company_name,
+        "business_name_en": "",
         "business_address": None,
         "business_email": profile.company_email or None,
         "business_phone": _phone_from_user(profile),
     }
-    _enrich_business_signature_from_stripe(profile, signature)
+    _enrich_business_signature_from_stripe(profile, signature, lang)
     return signature
 
 
@@ -205,6 +213,7 @@ def build_issuer_snapshot(profile: Optional[BusinessProfile]) -> dict[str, str]:
         invoice_number = (profile.invoice_registration_number or "").strip()
     return {
         "issuer_name": (signature.get("business_name") or "").strip(),
+        "issuer_name_en": (signature.get("business_name_en") or "").strip(),
         "issuer_address": (signature.get("business_address") or "").strip(),
         "issuer_email": (signature.get("business_email") or "").strip(),
         "issuer_phone": (signature.get("business_phone") or "").strip(),
@@ -251,7 +260,7 @@ def _booking_context(
             else None
         ),
     }
-    context.update(_business_signature(profile))
+    context.update(_business_signature(profile, lang))
     return context
 
 

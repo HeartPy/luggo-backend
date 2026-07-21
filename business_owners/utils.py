@@ -115,22 +115,31 @@ def verify_registration_token(token: str) -> Optional[RegistrationToken]:
         return None
 
 
+def owner_email_addressee_context(profile: "BusinessProfile") -> dict[str, Any]:
+    """事業者向けメールの宛名用コンテキスト（法人のみ会社名を表示）"""
+    return {
+        "is_company": profile.business_type == "company",
+        "company_name": (profile.company_name or "").strip(),
+        "rep_name": (
+            f"{profile.rep_last_name_kanji} {profile.rep_first_name_kanji}".strip()
+        ),
+    }
+
+
 def _registration_email_context(profile: "BusinessProfile") -> dict[str, Any]:
     """登録完了通知メールのテンプレートに渡す共通コンテキストを組み立て"""
     user = profile.user
-    return {
-        "company_name": profile.company_name,
+    context = {
         "business_type_label": BUSINESS_TYPE_LABELS.get(
             profile.business_type, profile.business_type
-        ),
-        "rep_name": (
-            f"{profile.rep_last_name_kanji} {profile.rep_first_name_kanji}".strip()
         ),
         "email": user.email,
         "phone_number": user.phone_number,
         "booking_url": build_booking_form_url(profile.subdomain),
         "signature": email_signature(),
     }
+    context.update(owner_email_addressee_context(profile))
+    return context
 
 
 def send_registration_completed_email_to_owner(profile: "BusinessProfile") -> bool:
@@ -216,16 +225,13 @@ def send_stripe_review_status_email(
         return False
 
     context = {
-        "company_name": profile.company_name,
-        "rep_name": (
-            f"{profile.rep_last_name_kanji} {profile.rep_first_name_kanji}".strip()
-        ),
         "old_status_label": _STRIPE_REVIEW_STATUS_LABELS.get(old_status, old_status),
         "new_status_label": _STRIPE_REVIEW_STATUS_LABELS.get(new_status, new_status),
         "status_message": _STRIPE_REVIEW_STATUS_MESSAGES.get(new_status, ""),
         "dashboard_url": f"{settings.FRONTEND_BASE_URL}/business-owner/dashboard",
         "signature": email_signature(),
     }
+    context.update(owner_email_addressee_context(profile))
 
     subject, text = _render_email("stripe_review_status_changed", context)
     return send_email(subject=subject, text=text, to=to_email)

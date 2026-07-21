@@ -36,14 +36,6 @@ def _get(value: Any, key: str, default: Any = None) -> Any:
     return getattr(value, key, default)
 
 
-def transfer_payout_amount(booking: LuggageBooking) -> int:
-    """送金額 =（合計金額 − 返金済み金額）− 差引後のプラットフォーム手数料"""
-    total = int(booking.total_amount or 0)
-    refunded = min(total, int(booking.refunded_amount or 0))
-    fee = platform_fee(total) - refunded_platform_fee(total, refunded)
-    return (total - refunded) - fee
-
-
 def _funds_available_on(charge: Any) -> Optional[datetime]:
     """Charge の balance_transaction から資金が入金可能になる日時を取得"""
     balance_transaction = _get(charge, "balance_transaction")
@@ -108,7 +100,11 @@ def create_transfer_for_delivered_booking(booking: LuggageBooking) -> bool:
         booking.stripe_charge_id = charge_id
         update_fields.append('stripe_charge_id')
 
-    amount = transfer_payout_amount(booking)
+    total = int(booking.total_amount or 0)
+    refunded = min(total, int(booking.refunded_amount or 0))
+    gross_amount = total - refunded
+    fee_amount = platform_fee(total) - refunded_platform_fee(total, refunded)
+    amount = gross_amount - fee_amount
     if amount <= 0:
         logger.info(
             "送金対象額が 0 円以下のためスキップ: booking_id=%s",
@@ -137,7 +133,17 @@ def create_transfer_for_delivered_booking(booking: LuggageBooking) -> bool:
 
     booking.stripe_transfer_id = str(_get(transfer, 'id', '') or '')
     booking.transferred_at = timezone.now()
-    update_fields.extend(['stripe_transfer_id', 'transferred_at', 'updated_at'])
+    booking.transferred_gross_amount = gross_amount
+    booking.transferred_platform_fee = fee_amount
+    update_fields.extend(
+        [
+            'stripe_transfer_id',
+            'transferred_at',
+            'transferred_gross_amount',
+            'transferred_platform_fee',
+            'updated_at',
+        ]
+    )
     booking.save(update_fields=update_fields)
 
     log_booking_event(
