@@ -1,0 +1,10 @@
+# ローカル仮想環境はプラットフォーム依存のためイメージに含めない
+# https://docs.astral.sh/uv/guides/integration/docker/
+.venv/
+venv/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+*.sqlite3

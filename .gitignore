@@ -181,9 +181,6 @@ secrets.json
 .env.production
 .env.prod
 
-# Docker
-.dockerignore
-
 # IDE & Editor files
 .vscode/
 .idea/
