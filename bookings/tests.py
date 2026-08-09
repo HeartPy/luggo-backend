@@ -9,7 +9,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from business_owners.models import BusinessProfile
+from drivers.models import DriverProfile
 from .models import LuggageBooking
+from .serializers import LuggageBookingCreateSerializer, OwnerBookingUpdateSerializer
 from .transfers import create_transfer_for_delivered_booking
 
 User = get_user_model()
@@ -56,8 +58,9 @@ class BaseBookingTest:
     def _get_booking_data(self, **kwargs):
         """テスト用予約データを取得するヘルパーメソッド（API用）"""
         defaults = self._BOOKING_DEFAULTS.copy()
-        pickup_date = date.today() + timedelta(days=1)
-        delivery_date = date.today() + timedelta(days=1)
+        # 23時以降は翌日分の予約受付が締め切られるため、時刻に左右されない日付にする
+        pickup_date = date.today() + timedelta(days=2)
+        delivery_date = date.today() + timedelta(days=2)
         defaults['pickup_date'] = pickup_date.isoformat()
         defaults['delivery_date'] = delivery_date.isoformat()
         # 各荷物の数量フィールド（views.pyでluggage_itemsとtotal_amountに変換される）
@@ -242,3 +245,190 @@ class DeliveryTransferTest(BaseBookingTest, TestCase):
 
         # Act & Assert: 送金がスキップされることを確認
         self.assertFalse(create_transfer_for_delivered_booking(booking))
+
+
+class BookingDriverAssignmentTest(BaseBookingTest, TestCase):
+    """集荷・配達担当の通常割り当てと分業割り当て"""
+
+    def setUp(self):
+        # Arrange: 事業者・集荷/配達ドライバー・予約を用意
+        owner_user = self._create_test_user(email='owner-assignment@example.com')
+        self.profile = BusinessProfile.objects.create(
+            user=owner_user,
+            company_name='担当テスト事業者',
+            company_email='owner-assignment@example.com',
+        )
+        self.delivery_driver = self._create_driver(
+            'delivery@example.com', '配達', '太郎'
+        )
+        self.pickup_driver = self._create_driver(
+            'pickup@example.com', '集荷', '花子'
+        )
+        self.booking = self._create_test_booking(business_owner=self.profile)
+
+    def _create_driver(
+        self, email: str, last_name: str, first_name: str
+    ) -> DriverProfile:
+        user = User.objects.create_user(
+            email=email,
+            password='testpass123',
+            user_type='delivery_driver',
+            last_name=last_name,
+            first_name=first_name,
+        )
+        return DriverProfile.objects.create(
+            user=user,
+            business_owner=self.profile,
+            license_expiry=date.today() + timedelta(days=365),
+        )
+
+    def _serializer(self, data):
+        return OwnerBookingUpdateSerializer(
+            self.booking,
+            data=data,
+            partial=True,
+            context={'business_profile': self.profile},
+        )
+
+    def test_split_assignment_uses_separate_pickup_driver(self):
+        # Arrange: 集荷と配達で別ドライバーを指定する更新データを用意
+        serializer = self._serializer({
+            'driver': str(self.delivery_driver.id),
+            'pickup_driver': str(self.pickup_driver.id),
+        })
+
+        # Act: バリデーションして保存
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        booking = serializer.save()
+
+        # Assert: 分業割当として集荷・配達が分かれることを確認
+        self.assertEqual(booking.driver, self.delivery_driver)
+        self.assertEqual(booking.effective_pickup_driver, self.pickup_driver)
+        self.assertTrue(booking.is_split_assignment)
+
+    def test_normal_assignment_clears_previous_split_assignment(self):
+        # Arrange: 既存の分業割当を通常割当に戻すデータを用意
+        self.booking.driver = self.delivery_driver
+        self.booking.pickup_driver = self.pickup_driver
+        self.booking.save()
+        serializer = self._serializer({'driver': str(self.pickup_driver.id)})
+
+        # Act: バリデーションして保存
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        booking = serializer.save()
+
+        # Assert: pickup_driver が消え、通常割当になることを確認
+        self.assertEqual(booking.driver, self.pickup_driver)
+        self.assertIsNone(booking.pickup_driver)
+        self.assertEqual(booking.effective_pickup_driver, self.pickup_driver)
+
+
+class OwnerBookingDetailAPITest(BaseBookingTest, APITestCase):
+    """事業者向け予約単体取得API（詳細ポップアップ表示用）"""
+
+    def setUp(self):
+        # Arrange: 事業者と、他事業者（アクセス不可の確認用）を用意
+        owner_user = self._create_test_user(email='owner-detail@example.com')
+        self.profile = BusinessProfile.objects.create(
+            user=owner_user,
+            company_name='詳細テスト事業者',
+            company_email='owner-detail@example.com',
+        )
+        other_owner_user = self._create_test_user(email='other-owner-detail@example.com')
+        self.other_profile = BusinessProfile.objects.create(
+            user=other_owner_user,
+            company_name='他事業者',
+            company_email='other-owner-detail@example.com',
+        )
+        self.booking = self._create_test_booking(business_owner=self.profile)
+
+    def test_get_returns_own_booking(self):
+        # Arrange: 自社の予約を認証済みで取得
+        self.client.force_authenticate(self.profile.user)
+
+        # Act: 予約単体取得APIを呼び出す
+        response = self.client.get(f'/api/business/bookings/{self.booking.id}')
+
+        # Assert: 予約詳細が返ることを確認
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['booking']['id'], str(self.booking.id))
+        self.assertEqual(
+            response.data['booking']['booking_number'], self.booking.booking_number
+        )
+
+    def test_get_rejects_other_owners_booking(self):
+        # Arrange: 他事業者として認証
+        self.client.force_authenticate(self.other_profile.user)
+
+        # Act: 自社ではない予約の取得を試みる
+        response = self.client.get(f'/api/business/bookings/{self.booking.id}')
+
+        # Assert: 見つからない扱いになることを確認
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_get_returns_404_for_missing_booking(self):
+        # Arrange: 存在しないIDを用意
+        self.client.force_authenticate(self.profile.user)
+        missing_id = '00000000-0000-0000-0000-000000000000'
+
+        # Act: 存在しない予約の取得を試みる
+        response = self.client.get(f'/api/business/bookings/{missing_id}')
+
+        # Assert: 見つからない扱いになることを確認
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_get_requires_authentication(self):
+        # Act: 未認証で予約単体取得APIを呼び出す
+        response = self.client.get(f'/api/business/bookings/{self.booking.id}')
+
+        # Assert: 認証エラーになることを確認
+        self.assertIn(response.status_code, (401, 403))
+
+
+class LuggageBookingCreatePhoneValidationTest(BaseBookingTest, TestCase):
+    """予約作成時の言語別電話番号バリデーション"""
+
+    def _create_serializer(self, **overrides):
+        data = self._get_booking_data(**overrides)
+        return LuggageBookingCreateSerializer(data=data)
+
+    def test_ja_accepts_domestic_phone(self):
+        # Arrange: 日本語ページ向けにハイフン付き国内電話番号を用意
+        serializer = self._create_serializer(
+            customer_language='ja',
+            customer_phone_number='090-1234-5678',
+        )
+
+        # Act: バリデーションを実行
+        is_valid = serializer.is_valid()
+
+        # Assert: 通ること、およびハイフン除去後の値が入ることを確認
+        self.assertTrue(is_valid, serializer.errors)
+        self.assertEqual(serializer.validated_data['customer_phone_number'], '09012345678')
+
+    def test_non_ja_rejects_domestic_phone(self):
+        # Arrange: 英語ページ向けに国内形式の電話番号を用意
+        serializer = self._create_serializer(
+            customer_language='en',
+            customer_phone_number='09012345678',
+        )
+
+        # Act: バリデーションを実行
+        is_valid = serializer.is_valid()
+
+        # Assert: 電話番号エラーになることを確認
+        self.assertFalse(is_valid)
+        self.assertIn('customer_phone_number', serializer.errors)
+
+    def test_non_ja_accepts_international_phone(self):
+        # Arrange: 英語ページ向けに国際形式の電話番号を用意
+        serializer = self._create_serializer(
+            customer_language='en',
+            customer_phone_number='+819012345678',
+        )
+
+        # Act: バリデーションを実行
+        is_valid = serializer.is_valid()
+
+        # Assert: 国際形式は通ることを確認
+        self.assertTrue(is_valid, serializer.errors)

@@ -108,10 +108,21 @@ def _serialize_booking(booking: LuggageBooking) -> dict[str, Any]:
         ),
         'driver': str(booking.driver_id) if booking.driver_id else None,
         'driver_name': _driver_display_name(booking.driver) if booking.driver_id else None,
+        'pickup_driver': (
+            str(booking.pickup_driver_id)
+            if booking.pickup_driver_id else None
+        ),
+        'pickup_driver_name': (
+            _driver_display_name(booking.pickup_driver)
+            if booking.pickup_driver_id else None
+        ),
+        'is_split_assignment': booking.is_split_assignment,
         'pickup_location_name': booking.pickup_location_name_display,
+        'pickup_postal_code': booking.pickup_postal_code,
         'pickup_location_address': booking.pickup_location_address_display,
         'pickup_date': booking.pickup_date.isoformat() if booking.pickup_date else None,
         'delivery_location_name': booking.delivery_location_name_display,
+        'delivery_postal_code': booking.delivery_postal_code,
         'delivery_location_address': booking.delivery_location_address_display,
         'delivery_date': booking.delivery_date.isoformat() if booking.delivery_date else None,
         'luggage_items': items,
@@ -141,7 +152,7 @@ def _scoped_queryset(business_profile) -> QuerySet[LuggageBooking]:
     """対象事業者の予約のみを返すベースクエリ"""
     return LuggageBooking.objects.filter(
         business_owner=business_profile
-    ).select_related('driver__user')
+    ).select_related('driver__user', 'pickup_driver__user')
 
 
 def _driver_display_name(driver: Optional[DriverProfile]) -> str:
@@ -494,9 +505,20 @@ def assign_booking_drivers(request: Request) -> Response:
             str(driver_value).strip() if driver_value not in (None, '') else None
         )
         current_driver_id = str(booking.driver_id) if booking.driver_id else None
-        if current_driver_id != new_driver_id:
+        if current_driver_id != new_driver_id or booking.pickup_driver_id is not None:
             booking.driver_id = new_driver_id
-            booking.save(update_fields=['driver', 'updated_at'])
+            # 予約一覧の一括割り当ては通常割り当てとして扱い、
+            # 選択した一人が集荷と配達の両方を担当する。
+            booking.pickup_driver = None
+            booking.pickup_manually_assigned = False
+            booking.delivery_manually_assigned = new_driver_id is not None
+            booking.save(update_fields=[
+                'driver',
+                'pickup_driver',
+                'pickup_manually_assigned',
+                'delivery_manually_assigned',
+                'updated_at',
+            ])
             updated_count += 1
 
     return Response(
@@ -528,10 +550,10 @@ def list_drivers(request: Request) -> Response:
     return Response({'results': results}, status=status.HTTP_200_OK)
 
 
-@api_view(['PUT', 'PATCH'])
+@api_view(['GET', 'PUT', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def update_booking(request: Request, booking_id: str) -> Response:
-    """予約の編集可能項目を更新（詳細ポップアップの「保存」）"""
+    """予約の取得（詳細ポップアップ表示用）と編集可能項目の更新（詳細ポップアップの「保存」）"""
     business_profile = _get_business_profile(request)
     if business_profile is None:
         return Response(
@@ -547,6 +569,9 @@ def update_booking(request: Request, booking_id: str) -> Response:
             {'errMsg': '予約が見つかりません。'},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+    if request.method == 'GET':
+        return Response({'booking': _serialize_booking(booking)})
 
     if booking.delivery_status == 'cancelled':
         return Response(
@@ -790,6 +815,8 @@ def export_bookings_csv(request: Request) -> HttpResponse:
     header = [
         '予約番号',
         '配達状況',
+        '集荷担当',
+        '配達担当',
         '顧客名',
         'メールアドレス',
         '電話番号',
@@ -818,6 +845,8 @@ def export_bookings_csv(request: Request) -> HttpResponse:
         row = [
             booking.booking_number,
             STATUS_LABELS.get(booking.delivery_status, booking.delivery_status),
+            _driver_display_name(booking.effective_pickup_driver),
+            _driver_display_name(booking.driver),
             booking.customer_name,
             booking.customer_email,
             booking.customer_phone_number,

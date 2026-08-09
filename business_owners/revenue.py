@@ -132,11 +132,12 @@ def list_payout_history(
     profile: BusinessProfile,
     history_months: int,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """連結アカウントから銀行口座へ入金済みの Payout を返す"""
+    """連結アカウントから銀行口座へ着金済み（arrival_date が今日以前）の Payout を返す"""
     account_id = (profile.stripe_account_id or "").strip()
     if not account_id:
         return [], False
 
+    today = timezone.localdate()
     one_year_start = _months_ago_start(11)
     visible_start = _months_ago_start(history_months - 1)
     result = stripe.Payout.list(
@@ -160,7 +161,11 @@ def list_payout_history(
             has_more = True
             continue
 
-        arrival_date = _get(payout, "arrival_date", created)
+        arrival_date = _payout_date(_get(payout, "arrival_date", created))
+        # 着金予定日が未来のものは、まだ口座に届いていないため表示しない
+        if arrival_date > today:
+            continue
+
         payouts.append(
             {
                 "id": str(_get(payout, "id", "")),
@@ -168,7 +173,7 @@ def list_payout_history(
                 "destination": _payout_destination_label(
                     _get(payout, "destination")
                 ),
-                "paid_at": _payout_date(arrival_date).isoformat(),
+                "paid_at": arrival_date.isoformat(),
             }
         )
 

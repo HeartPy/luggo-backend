@@ -42,6 +42,7 @@ from .emails import (
     send_unmatched_payment_alert,
 )
 from .receipts import build_receipt_pdf, receipt_filename
+from .tasks import geocode_booking_postal_coordinates
 
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -546,11 +547,21 @@ _BOOKING_PAYLOAD_FIELDS = (
     'pickup_location_address',
     'pickup_location_name_ja',
     'pickup_location_address_ja',
+    'pickup_place_id',
+    'pickup_latitude',
+    'pickup_longitude',
+    'pickup_postal_code',
+    'pickup_geocode_status',
     'pickup_date',
     'delivery_location_name',
     'delivery_location_address',
     'delivery_location_name_ja',
     'delivery_location_address_ja',
+    'delivery_place_id',
+    'delivery_latitude',
+    'delivery_longitude',
+    'delivery_postal_code',
+    'delivery_geocode_status',
     'delivery_date',
     'notes',
     'customer_email',
@@ -562,6 +573,10 @@ _BOOKING_PAYLOAD_FIELDS = (
 )
 
 _BOOKING_DATE_FIELDS = ('pickup_date', 'delivery_date')
+_BOOKING_COORDINATE_FIELDS = (
+    'pickup_latitude', 'pickup_longitude',
+    'delivery_latitude', 'delivery_longitude',
+)
 
 # 顧客の表示言語として受け付ける値（不正値・未指定は 'ja' に正規化）
 _ALLOWED_CUSTOMER_LANGUAGES = {'ja', 'en', 'zh-Hans', 'zh-Hant'}
@@ -589,6 +604,29 @@ def normalize_luggage_counts(source: dict[str, Any]) -> tuple[dict[str, int], in
         counts[key] = value
         total += value
     return counts, total
+
+
+def _schedule_postal_geocode_if_needed(booking: LuggageBooking) -> None:
+    """
+    座標が欠けていて郵便番号がある予約に、概算座標の補完ジョブを予約する
+
+    住所を手入力した予約（候補未選択＝座標なし）が対象。コミット後に
+    Celery タスクを投入し、郵便番号から概算座標を取得して保存する。
+    """
+    needs_geocode = any(
+        (
+            getattr(booking, f'{prefix}_latitude') is None
+            or getattr(booking, f'{prefix}_longitude') is None
+        )
+        and (getattr(booking, f'{prefix}_postal_code') or '').strip()
+        for prefix in ('pickup', 'delivery')
+    )
+    if not needs_geocode:
+        return
+    booking_id = str(booking.id)
+    transaction.on_commit(
+        lambda: geocode_booking_postal_coordinates.delay(booking_id)
+    )
 
 
 def materialize_booking(
@@ -627,6 +665,7 @@ def materialize_booking(
                 issuer_snapshot_at=timezone.now(),
                 **booking_fields,
             )
+            _schedule_postal_geocode_if_needed(booking)
         return booking, True
     except IntegrityError:
         # 競合により他方（フロント/Webhook）が先に作成済み。既存を取得して返す。
@@ -682,6 +721,17 @@ def _booking_fields_from_payload(payload: dict[str, Any]) -> Optional[dict[str, 
             fields[key] = normalize_customer_language(value)
         elif key == 'customer_phone_number':
             fields[key] = normalize_phone_number(value) if value is not None else ''
+        elif key in _BOOKING_COORDINATE_FIELDS:
+            try:
+                fields[key] = float(value) if value not in (None, '') else None
+            except (ValueError, TypeError):
+                return None
+        elif key.endswith('_geocode_status'):
+            fields[key] = (
+                str(value)
+                if value in {'pending', 'verified', 'approximate', 'failed'}
+                else 'pending'
+            )
         else:
             fields[key] = value if value is not None else ''
     return fields
@@ -821,9 +871,19 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
                 validated = dict(serializer.validated_data)
                 validated.pop('payment_intent_id', None)
                 booking_fields = {
-                    key: validated.get(key, '')
+                    key: (
+                        validated.get(key)
+                        if key in _BOOKING_COORDINATE_FIELDS
+                        else validated.get(key, '')
+                    )
                     for key in _BOOKING_PAYLOAD_FIELDS
                 }
+                for prefix in ('pickup', 'delivery'):
+                    booking_fields[f'{prefix}_geocode_status'] = (
+                        'verified'
+                        if booking_fields.get(f'{prefix}_latitude') is not None
+                        else 'pending'
+                    )
                 booking_fields['customer_language'] = normalize_customer_language(
                     booking_fields.get('customer_language')
                 )

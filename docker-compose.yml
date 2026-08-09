@@ -12,8 +12,32 @@ services:
       - DEBUG=1
       - DJANGO_SETTINGS_MODULE=project.settings
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - ROUTING_CACHE_URL=redis://redis:6379/2
     depends_on:
       - db
+      - redis
+
+  celery:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: celery -A project worker --loglevel=info
+    volumes:
+      - .:/code
+    environment:
+      - DJANGO_SETTINGS_MODULE=project.settings
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - ROUTING_CACHE_URL=redis://redis:6379/2
+    depends_on:
+      - db
+      - redis
+
+  redis:
+    image: redis:7-alpine
 
   db:
     image: postgres:15-alpine
