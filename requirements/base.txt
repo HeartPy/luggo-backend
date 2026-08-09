@@ -10,3 +10,6 @@ Pillow==10.1.*
 requests==2.32.*
 stripe==9.*
 reportlab==4.*
+celery==5.6.*
+redis==8.*
+ortools==9.15.*

@@ -295,9 +295,8 @@ def send_booking_confirmation_email(booking: LuggageBooking) -> bool:
     )
 
 
-def _driver_recipient(booking: LuggageBooking) -> tuple[Optional[str], str]:
-    """キャンセル通知の宛先となる配達者のメールと表示名を返す"""
-    driver = booking.driver
+def _driver_recipient(driver) -> tuple[Optional[str], str]:
+    """配達者プロフィールからメールと表示名を返す"""
     if driver is None or not driver.user_id:
         return None, ""
 
@@ -308,6 +307,18 @@ def _driver_recipient(booking: LuggageBooking) -> tuple[Optional[str], str]:
         company_name = (driver.company_name or "").strip()
         name = f"{company_name}\nご担当者" if company_name else "ご担当者"
     return (email or None), name
+
+
+def _driver_recipients(booking: LuggageBooking) -> list[tuple[str, str]]:
+    """集荷・配達担当者の宛先を重複なしで返す"""
+    recipients: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for driver in (booking.effective_pickup_driver, booking.driver):
+        email, name = _driver_recipient(driver)
+        if email and email not in seen:
+            seen.add(email)
+            recipients.append((email, name))
+    return recipients
 
 
 def send_booking_cancellation_email_to_customer(
@@ -349,33 +360,36 @@ def send_booking_cancellation_email_to_customer(
 
 
 def send_booking_cancellation_email_to_driver(booking: LuggageBooking) -> bool:
-    """予約キャンセル時に担当配達者へキャンセル通知メールを送信。送信成功で True。"""
-    email, driver_name = _driver_recipient(booking)
-    if not email:
+    """予約キャンセル時に集荷・配達担当者へ通知。全件成功で True。"""
+    recipients = _driver_recipients(booking)
+    if not recipients:
         logger.info(
             "配達者向けキャンセル通知をスキップしました（宛先なし）: booking_id=%s",
             booking.id,
         )
         return False
 
-    try:
-        # 配達者向けは常に日本語（場所は日本語表記を優先）
-        context = _booking_context(booking, "ja", prefer_japanese_locations=True)
-        context["driver_name"] = driver_name
-        subject, text, html = _render_email("booking_cancellation_driver", context)
-    except Exception:
-        logger.exception(
-            "配達者向けキャンセル通知メールの組み立てに失敗しました: booking_id=%s",
-            booking.id,
-        )
-        return False
-
-    return send_email(
-        subject=subject,
-        text=text,
-        to=email,
-        html=html,
-    )
+    succeeded = True
+    for email, driver_name in recipients:
+        try:
+            # 配達者向けは常に日本語（場所は日本語表記を優先）
+            context = _booking_context(
+                booking, "ja", prefer_japanese_locations=True
+            )
+            context["driver_name"] = driver_name
+            subject, text, html = _render_email(
+                "booking_cancellation_driver", context
+            )
+            succeeded = send_email(
+                subject=subject, text=text, to=email, html=html
+            ) and succeeded
+        except Exception:
+            logger.exception(
+                "配達者向けキャンセル通知メールの組み立てに失敗しました: booking_id=%s",
+                booking.id,
+            )
+            succeeded = False
+    return succeeded
 
 
 def send_booking_cancellation_emails(

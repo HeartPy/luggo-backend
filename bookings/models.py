@@ -1,6 +1,7 @@
 from django.db import models
 from django.db.models import Q
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.utils import timezone
 import uuid
 from datetime import date, datetime, timedelta, time as dtime
@@ -59,7 +60,26 @@ class LuggageBooking(models.Model):
         null=True,
         blank=True,
         verbose_name='配達者',
-        help_text='この予約を担当する配達者'
+        help_text='この予約の配達担当者。集荷担当未指定時は集荷も担当する'
+    )
+    pickup_driver = models.ForeignKey(
+        'drivers.DriverProfile',
+        on_delete=models.SET_NULL,
+        related_name='pickup_assigned_bookings',
+        null=True,
+        blank=True,
+        verbose_name='集荷担当者',
+        help_text='配達担当者と集荷担当者を分ける場合のみ指定する'
+    )
+    delivery_manually_assigned = models.BooleanField(
+        default=False,
+        verbose_name='配達の手動割当',
+        help_text='人が手動で配達担当を付けた場合に True。自動割当では False',
+    )
+    pickup_manually_assigned = models.BooleanField(
+        default=False,
+        verbose_name='集荷の手動割当',
+        help_text='人が手動で集荷担当を付けた場合に True。自動割当では False',
     )
 
     # 集荷情報
@@ -82,6 +102,27 @@ class LuggageBooking(models.Model):
         default='',
         verbose_name='集荷場所の住所（日本語）',
         help_text='非日本語で予約された場合の日本語表記（事業者の予約一覧用）',
+    )
+    pickup_place_id = models.CharField(max_length=255, blank=True, default='')
+    pickup_latitude = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True,
+        validators=[MinValueValidator(-90), MaxValueValidator(90)],
+    )
+    pickup_longitude = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True,
+        validators=[MinValueValidator(-180), MaxValueValidator(180)],
+    )
+    pickup_postal_code = models.CharField(max_length=20, blank=True, default='')
+    pickup_geocode_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('pending', '未処理'),
+            ('verified', '確認済み'),
+            ('approximate', '概算'),
+            ('failed', '失敗'),
+        ],
+        default='pending',
+        db_index=True,
     )
     pickup_date = models.DateField(
         verbose_name='集荷日'
@@ -107,6 +148,27 @@ class LuggageBooking(models.Model):
         default='',
         verbose_name='配送場所の住所（日本語）',
         help_text='非日本語で予約された場合の日本語表記（事業者の予約一覧用）',
+    )
+    delivery_place_id = models.CharField(max_length=255, blank=True, default='')
+    delivery_latitude = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True,
+        validators=[MinValueValidator(-90), MaxValueValidator(90)],
+    )
+    delivery_longitude = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True,
+        validators=[MinValueValidator(-180), MaxValueValidator(180)],
+    )
+    delivery_postal_code = models.CharField(max_length=20, blank=True, default='')
+    delivery_geocode_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('pending', '未処理'),
+            ('verified', '確認済み'),
+            ('approximate', '概算'),
+            ('failed', '失敗'),
+        ],
+        default='pending',
+        db_index=True,
     )
     delivery_date = models.DateField(
         verbose_name='配送日'
@@ -396,6 +458,19 @@ class LuggageBooking(models.Model):
     def delivery_location_address_display(self) -> str:
         return self.delivery_location_address_ja or self.delivery_location_address
 
+    @property
+    def effective_pickup_driver(self):
+        """集荷担当者（分業指定がなければ配達担当者）"""
+        return self.pickup_driver or self.driver
+
+    @property
+    def is_split_assignment(self) -> bool:
+        """集荷担当と配達担当が別々に設定されているか"""
+        return (
+            self.pickup_driver_id is not None
+            and self.pickup_driver_id != self.driver_id
+        )
+
 
 class PendingBooking(models.Model):
     """
@@ -603,6 +678,7 @@ class BookingAuditLog(models.Model):
     ACTION_BOOKING_CANCELLED = 'booking_cancelled'
     ACTION_RECONCILED = 'reconciled'
     ACTION_TRANSFER_CREATED = 'transfer_created'
+    ACTION_AUTO_ASSIGNED = 'auto_assigned'
     ACTION_CHOICES = [
         (ACTION_REFUND_REQUESTED, '返金リクエスト'),
         (ACTION_REFUND_SUCCEEDED, '返金完了'),
@@ -612,6 +688,7 @@ class BookingAuditLog(models.Model):
         (ACTION_BOOKING_CANCELLED, '予約キャンセル'),
         (ACTION_RECONCILED, '整合性同期'),
         (ACTION_TRANSFER_CREATED, '事業者への送金'),
+        (ACTION_AUTO_ASSIGNED, '自動割当による担当割当'),
     ]
 
     booking = models.ForeignKey(

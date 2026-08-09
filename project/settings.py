@@ -11,7 +11,7 @@ import dj_database_url
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-env_file = BASE_DIR / '.env.dev'
+env_file = BASE_DIR / '.env.development'
 config = Config(RepositoryEnv(str(env_file)))
 
 SECRET_KEY = config('SECRET_KEY')
@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "business_owners.apps.BusinessOwnersConfig",
     "bookings.apps.BookingsConfig",
     "drivers.apps.DriversConfig",
+    "routing.apps.RoutingConfig",
     "administrators.apps.AdministratorsConfig",
 ]
 
@@ -219,6 +220,87 @@ FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='http://localhost:3000')
 
 # Google Places API設定
 GOOGLE_PLACES_API_KEY = config('GOOGLE_PLACES_API_KEY', default='')
+# Google Geocoding API設定
+GOOGLE_GEOCODING_API_KEY = config('GOOGLE_GEOCODING_API_KEY', default='')
+# Google Routes API設定
+GOOGLE_ROUTES_API_KEY = config(
+    'GOOGLE_ROUTES_API_KEY', default=GOOGLE_PLACES_API_KEY
+)
+
+# 日次自動割当
+CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://redis:6379/0')
+CELERY_RESULT_BACKEND = config(
+    'CELERY_RESULT_BACKEND', default='redis://redis:6379/1'
+)
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = config('CELERY_TASK_TIME_LIMIT', default=600, cast=int)
+
+# 1回の自動割当で扱う上限
+ROUTING_MAX_RESERVATIONS = config(
+    'ROUTING_MAX_RESERVATIONS', default=1000, cast=int
+)
+ROUTING_MAX_TASKS = config('ROUTING_MAX_TASKS', default=2000, cast=int)
+ROUTING_MAX_DRIVERS = config('ROUTING_MAX_DRIVERS', default=200, cast=int)
+ROUTING_MAX_ADVANCE_DAYS = config(
+    'ROUTING_MAX_ADVANCE_DAYS', default=90, cast=int
+)
+
+# 担当自動割当の計算設定（直線距離の概算で誰に振るかを決める）
+ROUTING_ASSIGNMENT_TIME_LIMIT_SECONDS = config(
+    'ROUTING_ASSIGNMENT_TIME_LIMIT_SECONDS', default=60, cast=int
+)
+ROUTING_ASSIGNMENT_DISTANCE_WEIGHT = config(
+    'ROUTING_ASSIGNMENT_DISTANCE_WEIGHT', default=1, cast=int
+)
+ROUTING_ASSIGNMENT_BALANCE_PENALTY = config(
+    'ROUTING_ASSIGNMENT_BALANCE_PENALTY', default=10000, cast=int
+)
+ROUTING_ASSIGNMENT_UNASSIGNED_PENALTY = config(
+    'ROUTING_ASSIGNMENT_UNASSIGNED_PENALTY', default=1000000000, cast=int
+)
+
+# 将来: 担当が決まったタスクについて、配達者ごとの訪問ルート（順序・所要時間）を
+# Google Routes の距離行列 + ルート探索で作るときに使う設定
+ROUTING_CACHE_URL = config('ROUTING_CACHE_URL', default='')
+if ROUTING_CACHE_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': ROUTING_CACHE_URL,
+        }
+    }
+# 距離行列取得時の渋滞考慮度
+ROUTING_GOOGLE_ROUTING_PREFERENCE = config(
+    'ROUTING_GOOGLE_ROUTING_PREFERENCE', default='TRAFFIC_AWARE'
+)
+# 距離行列APIへ一度に送る地点数の上限
+ROUTING_MATRIX_CHUNK_SIZE = config(
+    'ROUTING_MATRIX_CHUNK_SIZE', default=25, cast=int
+)
+# 同じチャンクでの再試行回数
+ROUTING_MATRIX_CHUNK_RETRIES = config(
+    'ROUTING_MATRIX_CHUNK_RETRIES', default=2, cast=int
+)
+# 1分あたりに取得してよい距離行列要素数の上限（APIレート制限対策）
+ROUTING_MATRIX_ELEMENTS_PER_MINUTE = config(
+    'ROUTING_MATRIX_ELEMENTS_PER_MINUTE', default=3000, cast=int
+)
+# 距離行列の結果をキャッシュする秒数
+ROUTING_MATRIX_CACHE_SECONDS = config(
+    'ROUTING_MATRIX_CACHE_SECONDS', default=300, cast=int
+)
+# Routes API への HTTP タイムアウト（秒）
+ROUTING_HTTP_TIMEOUT_SECONDS = config(
+    'ROUTING_HTTP_TIMEOUT_SECONDS', default=30, cast=int
+)
+# 配達者1人分の訪問順を求める計算の最大秒数
+ROUTING_SOLVER_TIME_LIMIT_SECONDS = config(
+    'ROUTING_SOLVER_TIME_LIMIT_SECONDS', default=10, cast=int
+)
+# 各訪問先での作業時間の想定（秒）
+ROUTING_SERVICE_SECONDS_PER_STOP = config(
+    'ROUTING_SERVICE_SECONDS_PER_STOP', default=300, cast=int
+)
 
 # ロギング設定
 LOGGING = {

@@ -1,6 +1,6 @@
 from .settings import *
 
-env_file = BASE_DIR / '.env.prod'
+env_file = BASE_DIR / '.env.production'
 
 DEBUG = False
 
