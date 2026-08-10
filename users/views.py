@@ -48,11 +48,11 @@ def send_login_code(request: Request) -> Response:
     try:
         # IPアドレスベースの制限をチェック
         ip_address = get_client_ip(request)
-        is_blocked, error_message = check_ip_login_attempts(ip_address)
+        is_blocked, err_msg = check_ip_login_attempts(ip_address)
         if is_blocked:
             logger.warning(f"ログイン試行がブロックされました: ip={ip_address}")
             return Response(
-                {'error': error_message},
+                {'error': err_msg},
                 status=status.HTTP_429_TOO_MANY_REQUESTS
             )
 
@@ -67,10 +67,11 @@ def send_login_code(request: Request) -> Response:
 
         # ユーザー認証
         user = authenticate(request, username=email, password=password)
-        if not user:
+        if not user or user.user_type != 'business_owner':
             # ログイン失敗を記録
             record_login_failure(ip_address)
-            # セキュリティ上の理由で、ユーザーが存在しない場合とパスワードが間違っている場合を区別しない
+            # セキュリティ上の理由で、ユーザーが存在しない場合・パスワード相違・
+            # 事業者以外のアカウントである場合を区別しない
             return Response(
                 {'error': 'メールアドレスまたはパスワードが正しくありません。'},
                 status=status.HTTP_401_UNAUTHORIZED
@@ -120,11 +121,11 @@ def verify_login_code_api(request: Request) -> Response:
     try:
         # IPアドレスベースの制限をチェック
         ip_address = get_client_ip(request)
-        is_blocked, error_message = check_ip_login_attempts(ip_address)
+        is_blocked, err_msg = check_ip_login_attempts(ip_address)
         if is_blocked:
             logger.warning(f"ログイン試行がブロックされました: ip={ip_address}")
             return Response(
-                {'error': error_message},
+                {'error': err_msg},
                 status=status.HTTP_429_TOO_MANY_REQUESTS
             )
 
@@ -155,6 +156,17 @@ def verify_login_code_api(request: Request) -> Response:
             logger.error(f"認証コード検証API: ユーザーが見つかりません: email={email}")
             return Response(
                 {'error': 'ユーザーが見つかりません。最初からログイン手続きをやり直してください。'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # 事業者以外のアカウントはこのAPIではログインさせない（多重防御）
+        if user.user_type != 'business_owner':
+            record_login_failure(ip_address)
+            clear_verification_code(user)
+            clear_login_session(user)
+            logger.warning(f"認証コード検証API: 事業者以外のログイン試行: email={email}, user_type={user.user_type}")
+            return Response(
+                {'error': 'メールアドレスまたはパスワードが正しくありません。'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
