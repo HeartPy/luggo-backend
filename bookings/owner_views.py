@@ -138,6 +138,16 @@ def _serialize_booking(booking: LuggageBooking) -> dict[str, Any]:
         'created_at': booking.created_at.isoformat() if booking.created_at else None,
         'can_cancel': booking.can_cancel(),
         'is_refundable_on_cancel': booking.is_refundable_on_cancel(),
+        # 配達者が入力した配達実績（事業者側では表示のみ）
+        'picked_up_at': (
+            booking.picked_up_at.isoformat() if booking.picked_up_at else None
+        ),
+        'delivered_at': (
+            booking.delivered_at.isoformat() if booking.delivered_at else None
+        ),
+        'facility_fee': booking.facility_fee,
+        'transport_cost': booking.transport_cost,
+        'delivery_signature': booking.delivery_signature,
     }
 
 

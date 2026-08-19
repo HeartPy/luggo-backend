@@ -99,77 +99,33 @@ class DailyTaskAssignment(models.Model):
         ]
 
 
-class DriverDailyRoute(models.Model):
-    """配達者別の日次ルート（将来の訪問順生成用）"""
+class DriverRouteResult(models.Model):
+    """
+    配達者用ダッシュボードの最適化ルート保存結果
 
-    run = models.ForeignKey(
-        DailyAssignmentRun, on_delete=models.CASCADE, related_name='routes'
-    )
+    担当タスクのスナップショットハッシュ（input_hash）が一致する限り
+    保存済みルートを再利用する。完了・キャンセルなどでタスクが減った
+    場合は停留所を間引いて順序を維持し、新規割当や座標変更のときだけ
+    Google Routes API を呼び直す。
+    """
+
     driver = models.ForeignKey(
-        'drivers.DriverProfile', on_delete=models.PROTECT, related_name='daily_routes'
+        'drivers.DriverProfile',
+        on_delete=models.CASCADE,
+        related_name='route_results',
     )
-    total_duration_seconds = models.PositiveIntegerField(
-        default=0, verbose_name='合計所要時間（秒）',
-    )
-    total_distance_meters = models.PositiveIntegerField(
-        default=0, verbose_name='合計距離（メートル）',
-    )
-    stop_count = models.PositiveSmallIntegerField(default=0, verbose_name='訪問先数')
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日')
+    service_date = models.DateField(db_index=True, verbose_name='対象日')
+    input_hash = models.CharField(max_length=64, verbose_name='入力ハッシュ')
+    route = models.JSONField(default=dict, verbose_name='生成済みルート')
+    generated_at = models.DateTimeField(auto_now=True, verbose_name='生成日時')
 
     class Meta:
-        db_table = 'driver_daily_routes'
-        verbose_name = '配達者日次ルート'
-        verbose_name_plural = '配達者日次ルート'
+        db_table = 'driver_route_results'
+        verbose_name = '配達者ルート保存結果'
+        verbose_name_plural = '配達者ルート保存結果'
         constraints = [
             models.UniqueConstraint(
-                fields=['run', 'driver'], name='uniq_driver_route_per_run'
+                fields=['driver', 'service_date'],
+                name='uniq_route_result_per_driver_date',
             )
-        ]
-
-
-class RouteStop(models.Model):
-    """ルート上の訪問先（将来の訪問順生成用）"""
-
-    class Kind(models.TextChoices):
-        PICKUP = 'pickup', '集荷'
-        DELIVERY = 'delivery', '配達'
-
-    route = models.ForeignKey(
-        DriverDailyRoute, on_delete=models.CASCADE, related_name='stops'
-    )
-    booking = models.ForeignKey(
-        'bookings.LuggageBooking', on_delete=models.PROTECT, related_name='route_stops'
-    )
-    kind = models.CharField(max_length=10, choices=Kind.choices, verbose_name='集荷・配達の種別')
-    sequence = models.PositiveSmallIntegerField(verbose_name='訪問順')
-    latitude = models.DecimalField(max_digits=9, decimal_places=6)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6)
-    location_name = models.CharField(
-        max_length=200, blank=True, default='', verbose_name='地点名',
-    )
-    location_address = models.TextField(blank=True, default='', verbose_name='住所')
-    planned_arrival_at = models.DateTimeField(
-        null=True, blank=True, verbose_name='到着予定日時',
-    )
-    duration_from_previous_seconds = models.PositiveIntegerField(
-        default=0, verbose_name='前地点からの所要時間（秒）',
-    )
-    distance_from_previous_meters = models.PositiveIntegerField(
-        default=0, verbose_name='前地点からの距離（メートル）',
-    )
-    manually_assigned = models.BooleanField(default=False, verbose_name='手動割当')
-
-    class Meta:
-        db_table = 'route_stops'
-        ordering = ['sequence']
-        verbose_name = 'ルート訪問先'
-        verbose_name_plural = 'ルート訪問先'
-        constraints = [
-            models.UniqueConstraint(
-                fields=['route', 'sequence'], name='uniq_stop_sequence_per_route'
-            ),
-            models.UniqueConstraint(
-                fields=['route', 'booking', 'kind'], name='uniq_task_per_route'
-            ),
         ]

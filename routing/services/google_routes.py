@@ -3,7 +3,7 @@ Google Routes API を使って、地点間の道路所要時間・距離の行�
 
 複数の出発地点と目的地の組み合わせごとに、実際の走行時間（秒）と距離（メートル）
 の正方行列（MatrixResult）を返す。キャッシュ・チャンク分割・リトライも担う。
-割当済みルートの訪問順最適化（solver.py）や到着予定時刻計算の材料として使用想定。
+割当済みルートの訪問順最適化（solver.py）と到着予定時刻計算に使う。
 """
 import math
 import hashlib
@@ -89,7 +89,7 @@ class GoogleRoutesMatrixClient:
         self.api_key = api_key or getattr(settings, 'GOOGLE_ROUTES_API_KEY', '')
         self.session = session or requests
         self.routing_preference = getattr(
-            settings, 'ROUTING_GOOGLE_ROUTING_PREFERENCE', 'TRAFFIC_AWARE'
+            settings, 'ROUTING_GOOGLE_ROUTING_PREFERENCE', 'TRAFFIC_UNAWARE'
         )
         # OPTIMAL は API 側のチャンク上限が小さい
         max_chunk_size = (
