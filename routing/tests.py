@@ -1017,7 +1017,7 @@ class RoutingAPITests(APITestCase):
             str(self.driver.id),
         )
         self.assertEqual(response.data['task_count'], 1)
-        self.assertEqual(response.data['reservation_count'], 1)
+        self.assertEqual(response.data['booking_count'], 1)
         self.assertEqual(response.data['stop_capacity'], 10)
         self.assertTrue(response.data['capacity_sufficient'])
         self.assertTrue(response.data['within_limit'])

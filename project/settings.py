@@ -237,8 +237,8 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = config('CELERY_TASK_TIME_LIMIT', default=600, cast=int)
 
 # 1回の自動割当で扱う上限
-ROUTING_MAX_RESERVATIONS = config(
-    'ROUTING_MAX_RESERVATIONS', default=1000, cast=int
+ROUTING_MAX_BOOKINGS = config(
+    'ROUTING_MAX_BOOKINGS', default=1000, cast=int
 )
 ROUTING_MAX_TASKS = config('ROUTING_MAX_TASKS', default=2000, cast=int)
 ROUTING_MAX_DRIVERS = config('ROUTING_MAX_DRIVERS', default=200, cast=int)

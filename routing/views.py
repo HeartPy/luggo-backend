@@ -180,7 +180,7 @@ def _selected_driver_ids(
 
 def _problem_limits(problem: AssignmentInput) -> dict[str, Any]:
     """自動割当の処理上限・訪問枠の充足状況を返す"""
-    reservation_count = len({task.booking_id for task in problem.tasks})
+    booking_count = len({task.booking_id for task in problem.tasks})
     task_count = len(problem.tasks)
     driver_count = len(problem.drivers)
     stop_capacity = sum(
@@ -188,13 +188,13 @@ def _problem_limits(problem: AssignmentInput) -> dict[str, Any]:
         for driver in problem.drivers
     )
     within_limit = (
-        reservation_count
-        <= int(getattr(settings, 'ROUTING_MAX_RESERVATIONS', 1000))
+        booking_count
+        <= int(getattr(settings, 'ROUTING_MAX_BOOKINGS', 1000))
         and task_count <= int(getattr(settings, 'ROUTING_MAX_TASKS', 2000))
         and driver_count <= int(getattr(settings, 'ROUTING_MAX_DRIVERS', 200))
     )
     return {
-        'reservation_count': reservation_count,
+        'booking_count': booking_count,
         'task_count': task_count,
         'driver_count': driver_count,
         'stop_capacity': stop_capacity,
