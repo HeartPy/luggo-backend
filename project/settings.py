@@ -260,8 +260,7 @@ ROUTING_ASSIGNMENT_UNASSIGNED_PENALTY = config(
     'ROUTING_ASSIGNMENT_UNASSIGNED_PENALTY', default=1000000000, cast=int
 )
 
-# 将来: 担当が決まったタスクについて、配達者ごとの訪問ルート（順序・所要時間）を
-# Google Routes の距離行列 + ルート探索で作るときに使う設定
+# 配達者ごとの訪問ルート生成（Google Routes 距離行列 + 訪問順ソルバー）
 ROUTING_CACHE_URL = config('ROUTING_CACHE_URL', default='')
 if ROUTING_CACHE_URL:
     CACHES = {
@@ -272,7 +271,7 @@ if ROUTING_CACHE_URL:
     }
 # 距離行列取得時の渋滞考慮度
 ROUTING_GOOGLE_ROUTING_PREFERENCE = config(
-    'ROUTING_GOOGLE_ROUTING_PREFERENCE', default='TRAFFIC_AWARE'
+    'ROUTING_GOOGLE_ROUTING_PREFERENCE', default='TRAFFIC_UNAWARE'
 )
 # 距離行列APIへ一度に送る地点数の上限
 ROUTING_MATRIX_CHUNK_SIZE = config(

@@ -266,6 +266,29 @@ class LuggageBooking(models.Model):
         verbose_name='返金整合性チェック日時',
     )
 
+    # 配達者による集荷・配達の実績情報
+    picked_up_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='集荷完了日時',
+    )
+    facility_fee = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name='施設側の手数料（円）',
+    )
+    transport_cost = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name='高速代などの交通費（円）',
+    )
+    # 配達完了時に施設側の担当者が入力する手書きサイン（PNGのdata URL）
+    delivery_signature = models.TextField(
+        blank=True,
+        default='',
+        verbose_name='配達完了時の手書きサイン',
+    )
+
     # 配達完了と事業者への送金情報
     delivered_at = models.DateTimeField(
         null=True,
