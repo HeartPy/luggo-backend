@@ -8,6 +8,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from users.account_access import is_driver_account_blocked
 from users.utils import (
     check_ip_login_attempts,
     get_client_ip,
@@ -42,9 +43,13 @@ def driver_login(request: Request) -> Response:
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # ユーザー認証（配達者アカウント以外はログインさせない）
+        # ユーザー認証（配達者アカウント以外・無効アカウントはログインさせない）
         user = authenticate(request, username=email, password=password)
-        if not user or user.user_type != 'delivery_driver':
+        if (
+            not user
+            or user.user_type != 'delivery_driver'
+            or is_driver_account_blocked(user)
+        ):
             record_login_failure(ip_address)
             # セキュリティ上の理由で、ユーザーが存在しない場合・パスワード相違・
             # 配達者以外のアカウントである場合を区別しない

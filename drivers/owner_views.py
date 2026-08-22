@@ -61,17 +61,96 @@ STATUS_LABELS: dict[str, str] = dict(LuggageBooking.DELIVERY_STATUS_CHOICES)
 
 
 def _get_business_profile(request: Request) -> Optional[BusinessProfile]:
-    """ログイン中ユーザーの事業者プロフィールを返す"""
-    if not hasattr(request.user, 'business_profile'):
+    """ログイン中の有効な事業者プロフィールを返す"""
+    profile = getattr(request.user, 'business_profile', None)
+    if profile is None or not profile.is_active:
         return None
-    return request.user.business_profile
+    return profile
 
 
 def _scoped_drivers(business_profile: BusinessProfile) -> QuerySet[DriverProfile]:
-    """対象事業者の配達者のみを返すベースクエリ"""
+    """対象事業者の有効な配達者のみを返すベースクエリ"""
     return DriverProfile.objects.filter(
-        business_owner=business_profile
+        business_owner=business_profile,
+        is_active=True,
     ).select_related('user')
+
+
+def _email_blocks_new_driver_invite(
+    email: str,
+    business_profile: BusinessProfile,
+) -> bool:
+    """
+    このメールで新規配達者を招待できないか
+
+    同じ事業者の利用停止中配達者なら再招待（再開）できるため False。
+    """
+    user = (
+        User.objects.filter(email=email)
+        .select_related('driver_profile')
+        .first()
+    )
+    if user is None:
+        return False
+    profile = getattr(user, 'driver_profile', None)
+    if (
+        user.user_type == 'delivery_driver'
+        and profile is not None
+        and profile.business_owner_id == business_profile.id
+        and not profile.is_active
+    ):
+        return False
+    return True
+
+
+def _inactive_driver_for_invite(
+    email: str,
+    business_profile: BusinessProfile,
+) -> Optional[DriverProfile]:
+    """再招待で再開できる、同じ事業者の利用停止中配達者を返す"""
+    user = (
+        User.objects.filter(
+            email=email,
+            user_type='delivery_driver',
+        )
+        .select_related('driver_profile')
+        .first()
+    )
+    if user is None:
+        return None
+    profile = getattr(user, 'driver_profile', None)
+    if (
+        profile is None
+        or profile.business_owner_id != business_profile.id
+        or profile.is_active
+    ):
+        return None
+    return profile
+
+
+def _unassign_driver_from_active_bookings(
+    business_profile: BusinessProfile,
+    driver: DriverProfile,
+) -> int:
+    """未完了の集荷・配達からこの配達者の割り当てを外す"""
+    scoped = LuggageBooking.objects.filter(
+        business_owner=business_profile,
+        delivery_status__in=['before_pickup', 'picked_up'],
+    ).filter(Q(driver=driver) | Q(pickup_driver=driver))
+    unassigned_count = 0
+    for booking in scoped:
+        update_fields = ['updated_at']
+        if booking.driver_id == driver.id:
+            booking.driver = None
+            booking.delivery_manually_assigned = False
+            update_fields.extend(['driver', 'delivery_manually_assigned'])
+        if booking.pickup_driver_id == driver.id:
+            booking.pickup_driver = None
+            booking.pickup_manually_assigned = False
+            update_fields.extend(['pickup_driver', 'pickup_manually_assigned'])
+        booking.save(update_fields=update_fields)
+        unassigned_count += 1
+    return unassigned_count
 
 
 def _driver_name(driver: DriverProfile) -> str:
@@ -377,6 +456,7 @@ def _validate_driver_input(
     request: Request,
     *,
     current_user=None,
+    business_profile: Optional[BusinessProfile] = None,
 ) -> tuple[dict[str, Any], dict[str, list[str]]]:
     """
     追加・編集フォームの入力を検証し、(正規化済みデータ, フィールド別エラー) を返す
@@ -407,7 +487,14 @@ def _validate_driver_input(
             if current_user is not None:
                 duplicated = duplicated.exclude(id=current_user.id)
             if duplicated.exists():
-                errs['email'] = ['このメールアドレスは既に登録されています。']
+                if (
+                    current_user is None
+                    and business_profile is not None
+                    and not _email_blocks_new_driver_invite(email, business_profile)
+                ):
+                    pass
+                else:
+                    errs['email'] = ['このメールアドレスは既に登録されています。']
 
     departure_address = str(request.data.get('departure_address') or '').strip()
 
@@ -510,7 +597,7 @@ def _resolve_departure_coordinates(
     data: dict[str, Any],
     current_driver: Optional[DriverProfile] = None,
 ) -> Optional[str]:
-    """出発住所から信頼できる座標を取得して data に書き込む"""
+    """出発地点から信頼できる座標を取得して data に書き込む"""
     address = data['departure_address']
     if not address:
         data['departure_place_id'] = ''
@@ -693,7 +780,7 @@ def _list_drivers(request: Request, business_profile: BusinessProfile) -> Respon
 
 def _create_driver(request: Request, business_profile: BusinessProfile) -> Response:
     """配達者登録の確認メールを送信（承認されるまでUserは作成しない）"""
-    data, errs = _validate_driver_input(request)
+    data, errs = _validate_driver_input(request, business_profile=business_profile)
     if errs:
         return Response(
             {'errMsg': '入力内容を確認してください。', 'valid_errs': errs},
@@ -786,7 +873,7 @@ def _create_driver(request: Request, business_profile: BusinessProfile) -> Respo
 @api_view(['GET', 'PUT', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def manage_driver_detail(request: Request, driver_id: str) -> Response:
-    """配達者の詳細取得・更新・削除"""
+    """配達者の詳細取得・更新・利用停止"""
     business_profile = _get_business_profile(request)
     if business_profile is None:
         return Response(
@@ -811,11 +898,11 @@ def manage_driver_detail(request: Request, driver_id: str) -> Response:
     if request.method == 'DELETE':
         driver_masked = mask_sensitive_id(str(driver.id))
         with transaction.atomic():
-            # User を削除すると DriverProfile もカスケード削除され、
-            # 予約の担当者は SET_NULL で未割り当てに戻る
-            driver.user.delete()
+            _unassign_driver_from_active_bookings(business_profile, driver)
+            driver.is_active = False
+            driver.save()
         logger.info(
-            "配達者を削除: business_owner=%s, driver=%s",
+            "配達者を利用停止: business_owner=%s, driver=%s",
             mask_sensitive_id(str(business_profile.id)),
             driver_masked,
         )
@@ -1022,7 +1109,9 @@ def verify_driver_invitation_api(request: Request) -> Response:
     if (
         invitation is None
         or not invitation.business_owner.is_active
-        or User.objects.filter(email=invitation.email).exists()
+        or _email_blocks_new_driver_invite(
+            invitation.email, invitation.business_owner
+        )
     ):
         return Response(
             {'valid': False, 'errMsg': 'この確認リンクは無効か、有効期限が切れています。'},
@@ -1082,38 +1171,76 @@ def accept_driver_invitation(request: Request) -> Response:
                     {'errMsg': 'この確認リンクは無効か、有効期限が切れています。'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if User.objects.filter(email=invitation.email).exists():
+
+            existing_driver = _inactive_driver_for_invite(
+                invitation.email, invitation.business_owner
+            )
+            if (
+                existing_driver is None
+                and User.objects.filter(email=invitation.email).exists()
+            ):
                 return Response(
                     {'errMsg': 'このメールアドレスは既に登録されています。'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            user = User.objects.create_user(
-                email=invitation.email,
-                password=password,
-                user_type='delivery_driver',
-                last_name=invitation.last_name,
-                first_name=invitation.first_name,
-            )
-            if invitation.profile_picture:
-                user.profile_picture = invitation.profile_picture.name
-                user.save(update_fields=['profile_picture'])
+            if existing_driver is not None:
+                user = existing_driver.user
+                user.set_password(password)
+                user.last_name = invitation.last_name
+                user.first_name = invitation.first_name
+                user.is_active = True
+                user_update_fields = [
+                    'password', 'last_name', 'first_name', 'is_active', 'updated_at',
+                ]
+                if invitation.profile_picture:
+                    user.profile_picture = invitation.profile_picture.name
+                    user_update_fields.append('profile_picture')
+                user.save(update_fields=user_update_fields)
 
-            driver = DriverProfile.objects.create(
-                user=user,
-                business_owner=invitation.business_owner,
-                company_name=invitation.company_name,
-                departure_address=invitation.departure_address,
-                departure_place_id=invitation.departure_place_id,
-                departure_latitude=invitation.departure_latitude,
-                departure_longitude=invitation.departure_longitude,
-                shift_start=invitation.shift_start,
-                max_daily_stops=invitation.max_daily_stops,
-                max_daily_luggage_count=invitation.max_daily_luggage_count,
-                license_expiry=invitation.license_expiry,
-                operating_days=invitation.operating_days,
-                is_available=invitation.is_available,
-            )
+                existing_driver.company_name = invitation.company_name
+                existing_driver.departure_address = invitation.departure_address
+                existing_driver.departure_place_id = invitation.departure_place_id
+                existing_driver.departure_latitude = invitation.departure_latitude
+                existing_driver.departure_longitude = invitation.departure_longitude
+                existing_driver.shift_start = invitation.shift_start
+                existing_driver.max_daily_stops = invitation.max_daily_stops
+                existing_driver.max_daily_luggage_count = (
+                    invitation.max_daily_luggage_count
+                )
+                existing_driver.license_expiry = invitation.license_expiry
+                existing_driver.operating_days = invitation.operating_days
+                existing_driver.is_available = invitation.is_available
+                existing_driver.is_active = True
+                existing_driver.save()
+                driver = existing_driver
+            else:
+                user = User.objects.create_user(
+                    email=invitation.email,
+                    password=password,
+                    user_type='delivery_driver',
+                    last_name=invitation.last_name,
+                    first_name=invitation.first_name,
+                )
+                if invitation.profile_picture:
+                    user.profile_picture = invitation.profile_picture.name
+                    user.save(update_fields=['profile_picture'])
+
+                driver = DriverProfile.objects.create(
+                    user=user,
+                    business_owner=invitation.business_owner,
+                    company_name=invitation.company_name,
+                    departure_address=invitation.departure_address,
+                    departure_place_id=invitation.departure_place_id,
+                    departure_latitude=invitation.departure_latitude,
+                    departure_longitude=invitation.departure_longitude,
+                    shift_start=invitation.shift_start,
+                    max_daily_stops=invitation.max_daily_stops,
+                    max_daily_luggage_count=invitation.max_daily_luggage_count,
+                    license_expiry=invitation.license_expiry,
+                    operating_days=invitation.operating_days,
+                    is_available=invitation.is_available,
+                )
             invitation.mark_as_used()
     except IntegrityError:
         return Response(

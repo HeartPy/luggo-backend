@@ -103,7 +103,7 @@ class BusinessProfile(models.Model):
     rep_first_name_kana = models.CharField(max_length=50, blank=True, verbose_name='代表者名（カナ）')
 
     # サービス情報
-    service_areas = models.JSONField(default=list, blank=True, verbose_name='事業所在地')
+    service_areas = models.JSONField(default=list, blank=True, verbose_name='集荷地域')
 
     # 営業情報
     operating_hours_start = models.TimeField(default='09:00', verbose_name='営業開始時間')
@@ -245,14 +245,19 @@ class BusinessProfile(models.Model):
     total_revenue = models.DecimalField(max_digits=12, decimal_places=2, default=0, verbose_name='総売上')
 
     # アカウント状態
-    is_approved = models.BooleanField(default=False, verbose_name='承認状態')
-    approval_date = models.DateTimeField(null=True, blank=True, verbose_name='承認日')
-    is_active = models.BooleanField(default=True, verbose_name='有効/無効')
-    deactivated_at = models.DateTimeField(null=True, blank=True, verbose_name='無効化日')
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name='有効',
+        help_text=(
+            '事業者が有効かどうかを示します。'
+            'プロフィールを削除する代わりに選択を解除してください。'
+        ),
+    )
+    deactivated_at = models.DateTimeField(null=True, blank=True, verbose_name='無効化日時')
 
-    #　作成日・更新日
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日')
-    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日')
+    #　作成日時・更新日時
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日時')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日時')
 
     # マネージャー
     objects = models.Manager()
@@ -373,6 +378,44 @@ class BusinessProfile(models.Model):
             self.operating_hours_start <= current_time <= self.operating_hours_end
         )
 
+    def save(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        """
+        is_active の変更時だけ、関連データを連動させる
+
+        - 無効化: deactivated_at を記録し、紐づく User も停止する。所属配達者も停止。
+        - 再有効化: deactivated_at をクリアし、紐づく User を再開（配達者は個別に再開）。
+        """
+        previous_is_active: Optional[bool] = None
+        if not self._state.adding and self.pk:
+            previous_is_active = (
+                type(self).objects.filter(pk=self.pk)
+                .values_list('is_active', flat=True)
+                .first()
+            )
+
+        if previous_is_active is True and not self.is_active:
+            if self.deactivated_at is None:
+                self.deactivated_at = timezone.now()
+        elif previous_is_active is False and self.is_active:
+            self.deactivated_at = None
+
+        super().save(*args, **kwargs)
+
+        if previous_is_active is not None and previous_is_active == self.is_active:
+            return
+
+        if self.user_id:
+            owner = self.user
+            if owner.is_active != self.is_active:
+                owner.is_active = self.is_active
+                owner.save(update_fields=['is_active'])
+
+        if previous_is_active is True and not self.is_active:
+            for driver in self.drivers.select_related('user'):
+                if driver.is_active:
+                    driver.is_active = False
+                    driver.save()
+
     def get_price(self, prefecture_code: Optional[str], luggage_type: str) -> Decimal:
         """都道府県と荷物の種類から料金を取得"""
         if not self.pricing_rules:
@@ -400,40 +443,94 @@ class BusinessProfile(models.Model):
 class PayoutDocumentDelivery(models.Model):
     """Stripe Payout単位の請求書・支払明細の生成／送信記録"""
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+        verbose_name='ID',
+    )
     business_profile = models.ForeignKey(
         BusinessProfile,
         on_delete=models.PROTECT,
         related_name='payout_document_deliveries',
+        verbose_name='事業者',
     )
-    stripe_payout_id = models.CharField(max_length=255, unique=True)
-    payout_created_at = models.DateTimeField()
-    arrival_date = models.DateField(null=True, blank=True)
-    payout_amount = models.IntegerField()
-    currency = models.CharField(max_length=3, default='jpy')
-    gross_sales = models.IntegerField(default=0)
-    platform_fee = models.IntegerField(default=0)
-    matched_transfer_amount = models.IntegerField(default=0)
-    adjustment_amount = models.IntegerField(default=0)
-    line_items = models.JSONField(default=list)
-    issuer_name = models.CharField(max_length=255)
-    issuer_address = models.TextField(blank=True, default='')
+    stripe_payout_id = models.CharField(
+        max_length=255,
+        unique=True,
+        verbose_name='Stripe Payout ID',
+    )
+    payout_created_at = models.DateTimeField(verbose_name='Payout作成日時')
+    arrival_date = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name='入金日',
+    )
+    payout_amount = models.IntegerField(verbose_name='入金額')
+    currency = models.CharField(
+        max_length=3,
+        default='jpy',
+        verbose_name='通貨',
+    )
+    gross_sales = models.IntegerField(default=0, verbose_name='売上合計')
+    platform_fee = models.IntegerField(default=0, verbose_name='プラットフォーム手数料')
+    matched_transfer_amount = models.IntegerField(
+        default=0,
+        verbose_name='振込合計',
+    )
+    adjustment_amount = models.IntegerField(default=0, verbose_name='差額')
+    line_items = models.JSONField(default=list, verbose_name='明細行')
+    issuer_name = models.CharField(max_length=255, verbose_name='発行者名')
+    issuer_address = models.TextField(
+        blank=True,
+        default='',
+        verbose_name='発行者住所',
+    )
     issuer_registration_number = models.CharField(
         max_length=14,
         blank=True,
         default='',
+        verbose_name='適格請求書発行事業者登録番号',
     )
-    recipient_email = models.EmailField()
-    send_attempts = models.PositiveIntegerField(default=0)
-    processing_started_at = models.DateTimeField(null=True, blank=True)
-    sent_at = models.DateTimeField(null=True, blank=True)
-    last_err = models.TextField(blank=True, default='')
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    recipient_email = models.EmailField(verbose_name='送信先メールアドレス')
+    send_attempts = models.PositiveIntegerField(
+        default=0,
+        verbose_name='送信試行回数',
+    )
+    processing_started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='送信処理開始日時',
+    )
+    sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='送信日時',
+    )
+    last_err = models.TextField(
+        blank=True,
+        default='',
+        verbose_name='最終エラー',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日時')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日時')
 
     class Meta:
         db_table = 'payout_document_deliveries'
         ordering = ['-payout_created_at']
+        verbose_name = '入金書類の送信記録'
+        verbose_name_plural = '入金書類の送信記録'
+
+    def __str__(self) -> str:
+        status = '送信済み' if self.sent_at else '未送信'
+        amount = f'¥{int(self.payout_amount):,}'
+        if self.payout_amount < 0:
+            amount = f'-¥{abs(int(self.payout_amount)):,}'
+        company = ''
+        if self.business_profile_id is not None:
+            company = getattr(self.business_profile, 'company_name', '') or ''
+        company = company or '事業者未設定'
+        return f'{status} / {amount} / {company} / {self.stripe_payout_id}'
 
 
 class RegistrationToken(models.Model):

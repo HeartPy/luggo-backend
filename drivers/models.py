@@ -1,4 +1,6 @@
 from decimal import Decimal
+from typing import Optional
+
 from django.db import models
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -10,8 +12,18 @@ class DriverProfile(models.Model):
     """配達者プロフィール"""
     # 基本情報
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='driver_profile')
-    business_owner = models.ForeignKey('business_owners.BusinessProfile', on_delete=models.CASCADE, related_name='drivers')
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='driver_profile',
+        verbose_name='ユーザー',
+    )
+    business_owner = models.ForeignKey(
+        'business_owners.BusinessProfile',
+        on_delete=models.CASCADE,
+        related_name='drivers',
+        verbose_name='事業者',
+    )
     company_name = models.CharField(
         max_length=200,
         blank=True,
@@ -19,7 +31,7 @@ class DriverProfile(models.Model):
     )
 
     # 出発地点（一覧表示・検索・ルート最適化の起点）
-    departure_address = models.TextField(blank=True, default='', verbose_name='出発住所')
+    departure_address = models.TextField(blank=True, default='', verbose_name='出発地点')
     departure_place_id = models.CharField(max_length=255, blank=True, default='')
     departure_latitude = models.DecimalField(
         max_digits=9, decimal_places=6, null=True, blank=True,
@@ -29,7 +41,7 @@ class DriverProfile(models.Model):
         max_digits=9, decimal_places=6, null=True, blank=True,
         validators=[MinValueValidator(-180), MaxValueValidator(180)],
     )
-    shift_start = models.TimeField(null=True, blank=True)
+    shift_start = models.TimeField(null=True, blank=True, verbose_name='稼働開始')
     max_daily_stops = models.PositiveSmallIntegerField(
         null=True, blank=True, default=10, verbose_name='1日の最大訪問数',
     )
@@ -44,13 +56,30 @@ class DriverProfile(models.Model):
 
     # ステータス情報
     license_expiry = models.DateField(verbose_name='免許証有効期限')
-    is_available = models.BooleanField(default=True, verbose_name='有効/無効')
+    is_available = models.BooleanField(
+        default=True,
+        verbose_name='自動割当の候補',
+        help_text='オンの配達者だけが日次自動割当の候補になります。',
+    )
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name='有効',
+        help_text=(
+            '配達者が有効かどうかを示します。'
+            'プロフィールを削除する代わりに選択を解除してください。'
+        ),
+    )
+    deactivated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='無効化日時',
+    )
     total_deliveries = models.PositiveIntegerField(default=0, verbose_name='総配達数')
     total_earnings = models.DecimalField(max_digits=10, decimal_places=2, default=0, verbose_name='総売上')
 
-    # 作成日・更新日
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日')
-    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日')
+    # 作成日時・更新日時
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日時')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日時')
 
     class Meta:
         db_table = 'driver_profiles'
@@ -64,6 +93,38 @@ class DriverProfile(models.Model):
         else:
             company_info = self.business_owner.company_name
         return f"{driver_name} ({company_info})"
+
+    def save(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        """
+        is_active の変更時だけ、関連データを連動させる
+
+        - 無効化: deactivated_at を記録し、紐づく User も停止。
+        - 再有効化: deactivated_at をクリアし、紐づく User を再開。
+        """
+        previous_is_active: Optional[bool] = None
+        if not self._state.adding and self.pk:
+            previous_is_active = (
+                type(self).objects.filter(pk=self.pk)
+                .values_list('is_active', flat=True)
+                .first()
+            )
+
+        if previous_is_active is True and not self.is_active:
+            if self.deactivated_at is None:
+                self.deactivated_at = timezone.now()
+        elif previous_is_active is False and self.is_active:
+            self.deactivated_at = None
+
+        super().save(*args, **kwargs)
+
+        if previous_is_active is not None and previous_is_active == self.is_active:
+            return
+        if not self.user_id:
+            return
+        driver_user = self.user
+        if driver_user.is_active != self.is_active:
+            driver_user.is_active = self.is_active
+            driver_user.save(update_fields=['is_active'])
 
     def complete_delivery(self, earnings: Decimal) -> None:
         self.total_deliveries += 1

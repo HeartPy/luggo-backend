@@ -26,10 +26,11 @@ logger = logging.getLogger(__name__)
 
 
 def _get_business_profile(request: Request) -> Optional[BusinessProfile]:
-    """ログイン中ユーザーの事業者プロフィールを返す"""
-    if not hasattr(request.user, 'business_profile'):
+    """ログイン中の有効な事業者プロフィールを返す"""
+    profile = getattr(request.user, 'business_profile', None)
+    if profile is None or not profile.is_active:
         return None
-    return request.user.business_profile
+    return profile
 
 
 def _run_is_stale(business_profile: BusinessProfile, run: DailyAssignmentRun) -> bool:

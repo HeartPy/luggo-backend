@@ -210,6 +210,14 @@ def format_phone_number_for_stripe(phone: str) -> str:
     return f'+81{phone_digits}'
 
 
+def _active_business_profile(user: Any) -> Optional[BusinessProfile]:
+    """有効な事業者プロフィールだけを返す"""
+    profile = getattr(user, 'business_profile', None)
+    if profile is None or not profile.is_active:
+        return None
+    return profile
+
+
 class HasStripeCustomAccount(BasePermission):
     """
     認証済みユーザーで、かつStripeアカウントが作成され、審査が通っていることを確認するパーミッションクラス
@@ -224,13 +232,13 @@ class HasStripeCustomAccount(BasePermission):
         if isinstance(user, AnonymousUser):
             return False
 
-        # 事業者プロフィールとStripeアカウントIDの存在確認
-        if not hasattr(user, 'business_profile') or not user.business_profile.stripe_account_id:
+        business_profile = _active_business_profile(user)
+        if business_profile is None or not business_profile.stripe_account_id:
             return False
 
         # Stripeアカウントの審査状態を確認
         try:
-            account_id = user.business_profile.stripe_account_id
+            account_id = business_profile.stripe_account_id
             account = stripe.Account.retrieve(account_id)
 
             # 審査が通っているかチェック
@@ -263,10 +271,11 @@ def custom_get_account(request: Request) -> Response:
     """Stripeアカウント情報を取得するためのAPIエンドポイント"""
     account_id = None
     try:
-        if not hasattr(request.user, 'business_profile') or not request.user.business_profile.stripe_account_id:
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None or not business_profile.stripe_account_id:
             return Response({'error': 'アカウントが見つかりません。'}, status=status.HTTP_404_NOT_FOUND)
 
-        account_id = request.user.business_profile.stripe_account_id
+        account_id = business_profile.stripe_account_id
         account = stripe.Account.retrieve(account_id)
 
         response_data: Dict[str, Any] = {'account_id': account.id, 'account': account}
@@ -299,13 +308,12 @@ def custom_create_account(request: Request) -> Response:
     """ログイン後のユーザーがStripeアカウントを作成するためのAPIエンドポイント"""
     try:
         # BusinessProfileの存在確認
-        if not hasattr(request.user, 'business_profile'):
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None:
             return Response(
                 {'error': '事業者プロフィールが見つかりません。'},
                 status=status.HTTP_404_NOT_FOUND
             )
-
-        business_profile = request.user.business_profile
 
         # 既にStripeアカウントが存在する場合はエラー
         if business_profile.stripe_account_id:
@@ -1060,10 +1068,11 @@ def custom_create_account(request: Request) -> Response:
 def custom_update_account(request: Request) -> Response:
     """Stripeアカウントの情報を更新するためのAPIエンドポイント"""
     try:
-        if not hasattr(request.user, 'business_profile') or not request.user.business_profile.stripe_account_id:
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None or not business_profile.stripe_account_id:
             return Response({'error': 'アカウントが見つかりません。'}, status=status.HTTP_404_NOT_FOUND)
 
-        account_id = request.user.business_profile.stripe_account_id
+        account_id = business_profile.stripe_account_id
 
         # 変換が必要なフロントエンド形式のデータ（product_company, rep_infoなど）が送られてきた場合、Stripe API形式に変換
         request_data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
@@ -1908,10 +1917,11 @@ def custom_upload_document(request: Request) -> Response:
 def custom_account_requirements(request: Request) -> Response:
     """Stripeアカウントの審査要件の状態を取得するためのAPIエンドポイント"""
     try:
-        if not hasattr(request.user, 'business_profile') or not request.user.business_profile.stripe_account_id:
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None or not business_profile.stripe_account_id:
             return Response({'error': 'アカウントが見つかりません。'}, status=status.HTTP_404_NOT_FOUND)
 
-        account_id = request.user.business_profile.stripe_account_id
+        account_id = business_profile.stripe_account_id
         account = stripe.Account.retrieve(account_id)
         req = account.requirements
         currently_due = req.get('currently_due', []) if req else []
@@ -1944,13 +1954,12 @@ def custom_account_requirements(request: Request) -> Response:
 def get_current_business_profile(request: Request) -> Response:
     """現在ログイン中の事業者のプロフィール情報を取得"""
     try:
-        if not hasattr(request.user, 'business_profile'):
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None:
             return Response(
                 {'error': '事業者情報が見つかりません。'},
                 status=status.HTTP_404_NOT_FOUND
             )
-
-        business_profile = request.user.business_profile
 
         return Response({
             'id': str(business_profile.id),
@@ -1977,8 +1986,6 @@ def get_current_business_profile(request: Request) -> Response:
             ),
             'total_orders_completed': business_profile.total_orders_completed,
             'total_revenue': str(business_profile.total_revenue),
-            'is_approved': business_profile.is_approved,
-            'approval_date': business_profile.approval_date.isoformat() if business_profile.approval_date else None,
             'is_active': business_profile.is_active,
             'deactivated_at': business_profile.deactivated_at.isoformat() if business_profile.deactivated_at else None,
             'created_at': business_profile.created_at.isoformat(),
@@ -2030,7 +2037,8 @@ def get_current_business_profile(request: Request) -> Response:
 @permission_classes([IsAuthenticated])
 def revenue_summary(request: Request) -> Response:
     """事業者の月別売上と Stripe からの入金履歴を返す"""
-    if not hasattr(request.user, 'business_profile'):
+    business_profile = _active_business_profile(request.user)
+    if business_profile is None:
         return Response(
             {'error': '事業者情報が見つかりません。'},
             status=status.HTTP_404_NOT_FOUND,
@@ -2056,19 +2064,18 @@ def revenue_summary(request: Request) -> Response:
         )
 
     year, month = (int(part) for part in selected_month.split('-'))
-    profile = request.user.business_profile
-    revenue = calculate_monthly_revenue(profile, year, month)
+    revenue = calculate_monthly_revenue(business_profile, year, month)
 
     payouts_error = False
     try:
         payouts, has_more_payouts = list_payout_history(
-            profile,
+            business_profile,
             int(history_months_raw),
         )
     except stripe.error.StripeError:  # type: ignore[attr-defined]
         logger.warning(
             'Stripe入金履歴の取得に失敗しました: profile_id=%s',
-            mask_sensitive_id(profile.id),
+            mask_sensitive_id(business_profile.id),
             exc_info=True,
         )
         payouts = []
@@ -2082,7 +2089,7 @@ def revenue_summary(request: Request) -> Response:
             'payouts': payouts,
             'has_more_payouts': has_more_payouts,
             'payouts_error': payouts_error,
-            'has_stripe_account': bool(profile.stripe_account_id),
+            'has_stripe_account': bool(business_profile.stripe_account_id),
         },
         status=status.HTTP_200_OK,
     )
@@ -2098,13 +2105,12 @@ def record_public_info_consent(request: Request) -> Response:
     初回同意済み（public_info_consent_at が設定済み）の場合は冪等に何もしない。
     """
     try:
-        if not hasattr(request.user, 'business_profile'):
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None:
             return Response(
                 {'error': '事業者情報が見つかりません。'},
                 status=status.HTTP_404_NOT_FOUND
             )
-
-        business_profile = request.user.business_profile
 
         if business_profile.public_info_consent_at is None:
             business_profile.public_info_consent_at = timezone.now()
@@ -2132,13 +2138,12 @@ def record_policy_agreement(request: Request) -> Response:
     プラットフォーム利用規約・プライバシーポリシーの確認を記録する。
     """
     try:
-        if not hasattr(request.user, 'business_profile'):
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None:
             return Response(
                 {'error': '事業者情報が見つかりません。'},
                 status=status.HTTP_404_NOT_FOUND
             )
-
-        business_profile = request.user.business_profile
         requested_terms = request.data.get('terms_version')
         requested_privacy = request.data.get('privacy_version')
 
@@ -2211,13 +2216,12 @@ def record_booking_template_acknowledge(request: Request) -> Response:
     変更内容を事業者が確認したことを記録する。
     """
     try:
-        if not hasattr(request.user, 'business_profile'):
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None:
             return Response(
                 {'error': '事業者情報が見つかりません。'},
                 status=status.HTTP_404_NOT_FOUND
             )
-
-        business_profile = request.user.business_profile
         requested_tx = request.data.get('transaction_law_version')
         requested_privacy = request.data.get('privacy_version')
 
@@ -2327,13 +2331,12 @@ def _normalize_pricing_rules(rules: dict) -> dict:
 def update_profile_pricing(request: Request) -> Response:
     """料金設定（出発地域・配達地域の料金）を更新する"""
     try:
-        if not hasattr(request.user, 'business_profile'):
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None:
             return Response(
                 {'error': '事業者情報が見つかりません。'},
                 status=status.HTTP_404_NOT_FOUND
             )
-
-        business_profile = request.user.business_profile
         service_areas = request.data.get('service_areas')
         pricing_rules = request.data.get('pricing_rules')
 
@@ -2373,13 +2376,12 @@ def update_profile_pricing(request: Request) -> Response:
 def pricing_draft(request: Request) -> Response:
     """料金設定ドラフト（一時保存）の取得・保存・削除"""
     try:
-        if not hasattr(request.user, 'business_profile'):
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None:
             return Response(
                 {'error': '事業者情報が見つかりません。'},
                 status=status.HTTP_404_NOT_FOUND,
             )
-
-        business_profile = request.user.business_profile
 
         if request.method == 'GET':
             if business_profile.pricing_draft is None:
@@ -2509,7 +2511,7 @@ def get_transaction_law_by_subdomain(request: Request) -> Response:
         if business_profile.public_info_consent_at is None:
             is_owner_preview = (
                 getattr(request.user, 'is_authenticated', False)
-                and hasattr(request.user, 'business_profile')
+                and (_active_business_profile(request.user) is not None)
                 and request.user.business_profile.subdomain == subdomain
             )
             if not is_owner_preview:
@@ -2798,13 +2800,12 @@ def register_business_account(request: Request) -> Response:
 def business_settings(request: Request) -> Response:
     """事業の設定（定休日・臨時休業日）の取得・更新"""
     try:
-        if not hasattr(request.user, 'business_profile'):
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None:
             return Response(
                 {'error': '事業者情報が見つかりません。'},
                 status=status.HTTP_404_NOT_FOUND
             )
-
-        business_profile = request.user.business_profile
 
         if request.method == 'GET':
             return Response({
@@ -2924,13 +2925,12 @@ def business_invoice_settings(request: Request) -> Response:
     形式は「T」＋13桁の数字。
     """
     try:
-        if not hasattr(request.user, 'business_profile'):
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None:
             return Response(
                 {'error': '事業者情報が見つかりません。'},
                 status=status.HTTP_404_NOT_FOUND,
             )
-
-        business_profile = request.user.business_profile
 
         if request.method == 'GET':
             return Response({
@@ -2986,13 +2986,12 @@ def business_invoice_settings(request: Request) -> Response:
 def business_settings_draft(request: Request) -> Response:
     """事業設定ドラフト（一時保存）の取得・保存・削除"""
     try:
-        if not hasattr(request.user, 'business_profile'):
+        business_profile = _active_business_profile(request.user)
+        if business_profile is None:
             return Response(
                 {'error': '事業者情報が見つかりません。'},
                 status=status.HTTP_404_NOT_FOUND,
             )
-
-        business_profile = request.user.business_profile
 
         if request.method == 'GET':
             if business_profile.settings_draft is None:

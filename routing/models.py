@@ -20,6 +20,7 @@ class DailyAssignmentRun(models.Model):
         'business_owners.BusinessProfile',
         on_delete=models.CASCADE,
         related_name='assignment_runs',
+        verbose_name='事業者',
     )
     service_date = models.DateField(db_index=True, verbose_name='割当対象日')
     status = models.CharField(
@@ -29,12 +30,14 @@ class DailyAssignmentRun(models.Model):
         db_index=True,
         verbose_name='割当状態',
     )
-    input_hash = models.CharField(max_length=64)
-    selected_driver_ids = models.JSONField(default=list, blank=True)
+    input_hash = models.CharField(max_length=64, verbose_name='入力ハッシュ')
+    selected_driver_ids = models.JSONField(
+        default=list, blank=True, verbose_name='選択した配達者ID',
+    )
     unassigned_tasks = models.JSONField(
         default=list, blank=True, verbose_name='未割当の集荷・配達',
     )
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日時')
     started_at = models.DateTimeField(
         null=True, blank=True, verbose_name='開始日時',
     )
@@ -57,6 +60,13 @@ class DailyAssignmentRun(models.Model):
                 name='uniq_active_routing_run_per_owner_date',
             )
         ]
+
+    def __str__(self) -> str:
+        company = self.business_owner.company_name if self.business_owner_id else '事業者未設定'
+        return (
+            f'{company} / {self.service_date} / '
+            f'{self.get_status_display()} / {self.id}'
+        )
 
 
 class DailyTaskAssignment(models.Model):
@@ -84,7 +94,7 @@ class DailyTaskAssignment(models.Model):
         verbose_name='集荷・配達の種別',
     )
     manually_assigned = models.BooleanField(default=False, verbose_name='手動割当')
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日時')
 
     class Meta:
         db_table = 'daily_task_assignments'

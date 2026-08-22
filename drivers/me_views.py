@@ -36,12 +36,16 @@ STATUS_KEYS = [choice[0] for choice in LuggageBooking.DELIVERY_STATUS_CHOICES]
 
 
 def _get_driver_profile(request: Request) -> Optional[DriverProfile]:
-    """ログイン中ユーザーの配達者プロフィールを返す"""
+    """ログイン中の有効な配達者プロフィールを返す"""
     if getattr(request.user, 'user_type', None) != 'delivery_driver':
         return None
-    if not hasattr(request.user, 'driver_profile'):
+    profile = getattr(request.user, 'driver_profile', None)
+    if profile is None or not profile.is_active:
         return None
-    return request.user.driver_profile
+    business = getattr(profile, 'business_owner', None)
+    if business is None or not business.is_active:
+        return None
+    return profile
 
 
 def _service_date(request: Request) -> Optional[date_type]:
@@ -66,7 +70,7 @@ def _scoped_bookings(
 
 
 def _location_data(booking: LuggageBooking, kind: str) -> dict[str, Any]:
-    """集荷・配送場所をカード表示用のdictに変換"""
+    """集荷・配達場所をカード表示用のdictに変換"""
     if kind == 'pickup':
         latitude = booking.pickup_latitude
         longitude = booking.pickup_longitude
