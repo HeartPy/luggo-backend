@@ -1372,7 +1372,7 @@ def create_payment_intent(request: Request) -> Response:
         delivery_pref = pref_code_from_postal(delivery_postal_code)
         if not delivery_pref or delivery_pref not in deliverable_prefectures:
             return Response(
-                {'errMsg': '配送場所の郵便番号は配達地域の対象外です。'},
+                {'errMsg': '配達場所の郵便番号は配達地域の対象外です。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1381,7 +1381,7 @@ def create_payment_intent(request: Request) -> Response:
         nth_weekday_holidays = business_profile.nth_weekday_holidays or []
         temporary_closures = business_profile.temporary_closures or []
 
-        for field_name, label in [('pickup_date', '集荷日'), ('delivery_date', '配送日')]:
+        for field_name, label in [('pickup_date', '集荷日'), ('delivery_date', '配達日')]:
             raw_date = request.data.get(field_name, '')
             if not raw_date:
                 continue
@@ -1418,7 +1418,7 @@ def create_payment_intent(request: Request) -> Response:
             pickup_date_raw = request.data.get('pickup_date', '')
             delivery_date_raw = request.data.get('delivery_date', '')
 
-            for raw_dt, label in [(pickup_date_raw, '集荷日'), (delivery_date_raw, '配送日')]:
+            for raw_dt, label in [(pickup_date_raw, '集荷日'), (delivery_date_raw, '配達日')]:
                 if not raw_dt:
                     continue
 

@@ -114,6 +114,7 @@ def eligible_drivers(business_owner, service_date: date) -> list[DriverProfile]:
     candidates = (
         DriverProfile.objects.filter(
             business_owner=business_owner,
+            is_active=True,
             is_available=True,
             departure_latitude__isnull=False,
             departure_longitude__isnull=False,

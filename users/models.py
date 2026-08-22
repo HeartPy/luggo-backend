@@ -58,10 +58,11 @@ class User(AbstractUser):
 
     # 基本認証情報
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    email = models.EmailField(unique=True)
+    email = models.EmailField(unique=True, verbose_name='メールアドレス')
     phone_number = models.CharField(
         max_length=15,
         blank=True,
+        verbose_name='電話番号',
         validators=[RegexValidator(r'^\+?\d{1,3}?\d{9,15}$', '有効な電話番号が必要です。')]
     )
 
@@ -74,17 +75,12 @@ class User(AbstractUser):
     user_type = models.CharField(
         max_length=20,
         choices=USER_TYPE_CHOICES,
+        verbose_name='ユーザータイプ',
     )
 
     # 共通プロフィール情報
     profile_picture = models.ImageField(upload_to='profile_pics/', blank=True, null=True)
     date_of_birth = models.DateField(null=True, blank=True)
-
-    # 住所
-    postal_code = models.CharField(max_length=10, blank=True, verbose_name='郵便番号')
-    city = models.CharField(max_length=50, blank=True, verbose_name='市区町村')
-    line1 = models.CharField(max_length=255, blank=True, verbose_name='町名・番地')
-    line2 = models.CharField(max_length=255, blank=True, verbose_name='建物名')
 
     # アカウント管理
     is_verified = models.BooleanField(default=False)
@@ -92,15 +88,14 @@ class User(AbstractUser):
     verification_code_expires_at = models.DateTimeField(null=True, blank=True, verbose_name='認証コード有効期限')
     verification_code_attempts = models.IntegerField(default=0, verbose_name='認証コード検証失敗回数')
     login_session_started_at = models.DateTimeField(null=True, blank=True, verbose_name='ログインセッション開始時刻')
-    last_active = models.DateTimeField(auto_now=True)
 
     # 通知設定
     email_notifications = models.BooleanField(default=True)
     sms_notifications = models.BooleanField(default=False)
 
     # 作成・更新日時
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日時')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日時')
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []

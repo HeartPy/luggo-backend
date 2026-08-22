@@ -36,8 +36,18 @@ class LuggageBooking(models.Model):
     ]
 
     # 基本情報
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    booking_number = models.CharField(max_length=20, unique=True, blank=True)
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+        verbose_name='ID',
+    )
+    booking_number = models.CharField(
+        max_length=20,
+        unique=True,
+        blank=True,
+        verbose_name='予約番号',
+    )
     business_owner = models.ForeignKey(
         'business_owners.BusinessProfile',
         on_delete=models.CASCADE,
@@ -103,16 +113,28 @@ class LuggageBooking(models.Model):
         verbose_name='集荷場所の住所（日本語）',
         help_text='非日本語で予約された場合の日本語表記（事業者の予約一覧用）',
     )
-    pickup_place_id = models.CharField(max_length=255, blank=True, default='')
+    pickup_place_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='集荷場所の Place ID',
+    )
     pickup_latitude = models.DecimalField(
         max_digits=9, decimal_places=6, null=True, blank=True,
         validators=[MinValueValidator(-90), MaxValueValidator(90)],
+        verbose_name='集荷場所の緯度',
     )
     pickup_longitude = models.DecimalField(
         max_digits=9, decimal_places=6, null=True, blank=True,
         validators=[MinValueValidator(-180), MaxValueValidator(180)],
+        verbose_name='集荷場所の経度',
     )
-    pickup_postal_code = models.CharField(max_length=20, blank=True, default='')
+    pickup_postal_code = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        verbose_name='集荷場所の郵便番号',
+    )
     pickup_geocode_status = models.CharField(
         max_length=20,
         choices=[
@@ -123,42 +145,55 @@ class LuggageBooking(models.Model):
         ],
         default='pending',
         db_index=True,
+        verbose_name='集荷場所のジオコード状態',
     )
     pickup_date = models.DateField(
         verbose_name='集荷日'
     )
 
-    # 配送情報
+    # 配達情報
     delivery_location_name = models.CharField(
         max_length=200,
-        verbose_name='配送場所の名称'
+        verbose_name='配達場所の名称'
     )
     delivery_location_address = models.TextField(
-        verbose_name='配送場所の住所'
+        verbose_name='配達場所の住所'
     )
     delivery_location_name_ja = models.CharField(
         max_length=200,
         blank=True,
         default='',
-        verbose_name='配送場所の名称（日本語）',
+        verbose_name='配達場所の名称（日本語）',
         help_text='非日本語で予約された場合の日本語表記（事業者の予約一覧用）',
     )
     delivery_location_address_ja = models.TextField(
         blank=True,
         default='',
-        verbose_name='配送場所の住所（日本語）',
+        verbose_name='配達場所の住所（日本語）',
         help_text='非日本語で予約された場合の日本語表記（事業者の予約一覧用）',
     )
-    delivery_place_id = models.CharField(max_length=255, blank=True, default='')
+    delivery_place_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        verbose_name='配達場所の Place ID',
+    )
     delivery_latitude = models.DecimalField(
         max_digits=9, decimal_places=6, null=True, blank=True,
         validators=[MinValueValidator(-90), MaxValueValidator(90)],
+        verbose_name='配達場所の緯度',
     )
     delivery_longitude = models.DecimalField(
         max_digits=9, decimal_places=6, null=True, blank=True,
         validators=[MinValueValidator(-180), MaxValueValidator(180)],
+        verbose_name='配達場所の経度',
     )
-    delivery_postal_code = models.CharField(max_length=20, blank=True, default='')
+    delivery_postal_code = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        verbose_name='配達場所の郵便番号',
+    )
     delivery_geocode_status = models.CharField(
         max_length=20,
         choices=[
@@ -169,9 +204,10 @@ class LuggageBooking(models.Model):
         ],
         default='pending',
         db_index=True,
+        verbose_name='配達場所のジオコード状態',
     )
     delivery_date = models.DateField(
-        verbose_name='配送日'
+        verbose_name='配達日'
     )
 
     # 追加情報
@@ -367,8 +403,8 @@ class LuggageBooking(models.Model):
     )
 
     # 作成日・更新日
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日')
-    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='予約日時')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日時')
 
     class Meta:
         db_table = 'luggage_bookings'
@@ -392,7 +428,10 @@ class LuggageBooking(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f'{self.booking_number} - {self.pickup_location_name} → {self.delivery_location_name}'
+        return (
+            f'{self.get_delivery_status_display()} / {self.booking_number} / '
+            f'{self.pickup_location_name} → {self.delivery_location_name}'
+        )
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         if not self.booking_number:
@@ -520,7 +559,7 @@ class PendingBooking(models.Model):
         blank=True,
         verbose_name='事業者',
     )
-    # 予約作成に必要なフィールド一式（集荷/配送先・日付・顧客情報・荷物個数など）。
+    # 予約作成に必要なフィールド一式（集荷/配達先・日付・顧客情報・荷物個数など）。
     # 検証済みの値のみを保存する。
     payload = models.JSONField(
         default=dict,
@@ -537,8 +576,8 @@ class PendingBooking(models.Model):
         blank=True,
         verbose_name='予約作成完了日時',
     )
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日')
-    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日時')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日時')
 
     class Meta:
         db_table = 'pending_bookings'
@@ -547,7 +586,13 @@ class PendingBooking(models.Model):
         ordering = ['-created_at']
 
     def __str__(self) -> str:
-        return f'PendingBooking({self.payment_intent_id})'
+        status = '予約作成済み' if self.consumed_at else '予約未作成'
+        amount = f'¥{int(self.total_amount):,}'
+        company = ''
+        if self.business_owner_id is not None:
+            company = getattr(self.business_owner, 'company_name', '') or ''
+        company = company or '事業者未設定'
+        return f'{status} / {amount} / {company} / {self.payment_intent_id}'
 
 
 class ChargeDispute(models.Model):
@@ -616,7 +661,7 @@ class ChargeDispute(models.Model):
     evidence_due_by = models.DateTimeField(
         null=True,
         blank=True,
-        verbose_name='証拠提出期限',
+        verbose_name='証拠提出期限日時',
     )
     opened_at = models.DateTimeField(
         null=True,
@@ -628,8 +673,8 @@ class ChargeDispute(models.Model):
         blank=True,
         verbose_name='クローズ日時',
     )
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日')
-    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日時')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新日時')
 
     class Meta:
         db_table = 'charge_disputes'
@@ -637,8 +682,23 @@ class ChargeDispute(models.Model):
         verbose_name_plural = 'チャージバック（異議申立て）'
         ordering = ['-created_at']
 
+    # Stripe Dispute.status の Admin / 表示用ラベル
+    STATUS_DISPLAY = {
+        'needs_response': '要対応',
+        'under_review': '審査中',
+        'won': '勝訴',
+        'lost': '敗訴',
+        'warning_needs_response': '警告・要対応',
+        'warning_under_review': '警告・審査中',
+        'warning_closed': '警告・クローズ',
+        'prevented': '防止済み',
+    }
+
     def __str__(self) -> str:
-        return f'ChargeDispute({self.dispute_id}, status={self.status})'
+        status_label = self.STATUS_DISPLAY.get(self.status, self.status or '状態不明')
+        reason = self.reason or '理由不明'
+        amount = f'¥{int(self.amount):,}'
+        return f'{status_label} / {reason} / {amount} / {self.dispute_id}'
 
 
 class StripeWebhookEvent(models.Model):
@@ -672,7 +732,9 @@ class StripeWebhookEvent(models.Model):
         ordering = ['-received_at']
 
     def __str__(self) -> str:
-        return f'StripeWebhookEvent({self.event_id}, {self.event_type})'
+        status = '処理済み' if self.processed_at else '未処理'
+        event_type = self.event_type or '種別不明'
+        return f'{event_type} / {status} / {self.event_id}'
 
 
 class BookingAuditLog(models.Model):
@@ -743,24 +805,28 @@ class BookingAuditLog(models.Model):
         max_length=20,
         blank=True,
         default='',
+        choices=LuggageBooking.DELIVERY_STATUS_CHOICES,
         verbose_name='変更前の配達状況',
     )
     new_delivery_status = models.CharField(
         max_length=20,
         blank=True,
         default='',
+        choices=LuggageBooking.DELIVERY_STATUS_CHOICES,
         verbose_name='変更後の配達状況',
     )
     previous_refund_status = models.CharField(
         max_length=20,
         blank=True,
         default='',
+        choices=LuggageBooking.REFUND_STATUS_CHOICES,
         verbose_name='変更前の返金状況',
     )
     new_refund_status = models.CharField(
         max_length=20,
         blank=True,
         default='',
+        choices=LuggageBooking.REFUND_STATUS_CHOICES,
         verbose_name='変更後の返金状況',
     )
     stripe_event_id = models.CharField(
@@ -809,4 +875,11 @@ class BookingAuditLog(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f'BookingAuditLog({self.action}, source={self.source})'
+        action_label = self.get_action_display()
+        source_label = self.get_source_display()
+        booking_number = ''
+        if self.booking_id is not None:
+            booking_number = getattr(self.booking, 'booking_number', '') or ''
+        if booking_number:
+            return f'{action_label} / {source_label} / {booking_number}'
+        return f'{action_label} / {source_label}'

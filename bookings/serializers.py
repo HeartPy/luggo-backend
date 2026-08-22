@@ -163,7 +163,7 @@ class LuggageBookingSerializer(serializers.ModelSerializer[LuggageBooking]):
         if pickup_date and delivery_date:
             if delivery_date < pickup_date:
                 raise serializers.ValidationError({
-                    'delivery_date': '配送日は集荷日以降の日付を指定してください。'
+                    'delivery_date': '配達日は集荷日以降の日付を指定してください。'
                 })
 
         validate_location_coordinates(data, self.instance)
@@ -227,10 +227,12 @@ class OwnerBookingUpdateSerializer(serializers.ModelSerializer[LuggageBooking]):
         business_profile = self.context.get('business_profile')
         if business_profile is not None:
             self.fields['driver'].queryset = DriverProfile.objects.filter(
-                business_owner=business_profile
+                business_owner=business_profile,
+                is_active=True,
             )
             self.fields['pickup_driver'].queryset = DriverProfile.objects.filter(
-                business_owner=business_profile
+                business_owner=business_profile,
+                is_active=True,
             )
 
     def validate_delivery_status(self, value: str) -> str:
@@ -264,7 +266,7 @@ class OwnerBookingUpdateSerializer(serializers.ModelSerializer[LuggageBooking]):
         ):
             data['pickup_driver'] = None
 
-        # 部分更新でも、最終的な集荷日・配送日の関係を検証する
+        # 部分更新でも、最終的な集荷日・配達日の関係を検証する
         pickup_date = data.get('pickup_date')
         delivery_date = data.get('delivery_date')
         if pickup_date is None and self.instance is not None:
@@ -274,7 +276,7 @@ class OwnerBookingUpdateSerializer(serializers.ModelSerializer[LuggageBooking]):
 
         if pickup_date and delivery_date and delivery_date < pickup_date:
             raise serializers.ValidationError({
-                'delivery_date': '配送日は集荷日以降の日付を指定してください。'
+                'delivery_date': '配達日は集荷日以降の日付を指定してください。'
             })
         validate_location_coordinates(data, self.instance)
         return data
@@ -386,7 +388,7 @@ class LuggageBookingCreateSerializer(serializers.ModelSerializer[LuggageBooking]
         if pickup_date and delivery_date:
             if delivery_date < pickup_date:
                 raise serializers.ValidationError({
-                    'delivery_date': '配送日は集荷日以降の日付を指定してください。'
+                    'delivery_date': '配達日は集荷日以降の日付を指定してください。'
                 })
 
         validate_location_coordinates(data)

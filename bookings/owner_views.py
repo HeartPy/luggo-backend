@@ -152,10 +152,11 @@ def _serialize_booking(booking: LuggageBooking) -> dict[str, Any]:
 
 
 def _get_business_profile(request: Request):
-    """ログイン中ユーザーの事業者プロフィールを返す"""
-    if not hasattr(request.user, 'business_profile'):
+    """ログイン中の有効な事業者プロフィールを返す"""
+    profile = getattr(request.user, 'business_profile', None)
+    if profile is None or not profile.is_active:
         return None
-    return request.user.business_profile
+    return profile
 
 
 def _scoped_queryset(business_profile) -> QuerySet[LuggageBooking]:
@@ -309,7 +310,7 @@ def _apply_filters(
     日付の絞り込みは「年月範囲（month_from / month_to）」と
     「期間クイック（period: today/tomorrow/day_after_tomorrow/week）」のいずれか一方。
     period が有効な場合は年月範囲より優先し、年月範囲は適用しない。
-    キーワード（keyword）は顧客名・集荷場所・配送場所のいずれかに部分一致する。
+    キーワード（keyword）は顧客名・集荷場所・配達場所のいずれかに部分一致する。
     実際に適用した (開始年月, 終了年月)と period を併せて返す。
     """
     period = (request.GET.get('period') or '').strip()
@@ -343,7 +344,7 @@ def _apply_filters(
         applied_from = from_ym
         applied_to = to_ym
 
-    # キーワード: 顧客名・集荷場所・配送場所のいずれかに部分一致
+    # キーワード: 顧客名・集荷場所・配達場所のいずれかに部分一致
     keyword = (request.GET.get('keyword') or '').strip()
     if keyword:
         queryset = queryset.filter(
@@ -491,6 +492,7 @@ def assign_booking_drivers(request: Request) -> Response:
             str(driver_id)
             for driver_id in DriverProfile.objects.filter(
                 business_owner=business_profile,
+                is_active=True,
                 id__in=driver_ids,
             ).values_list('id', flat=True)
         }
@@ -549,7 +551,10 @@ def list_drivers(request: Request) -> Response:
         )
 
     drivers = (
-        DriverProfile.objects.filter(business_owner=business_profile)
+        DriverProfile.objects.filter(
+            business_owner=business_profile,
+            is_active=True,
+        )
         .select_related('user')
     )
     results = [

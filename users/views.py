@@ -23,6 +23,7 @@ from .utils import (
     send_password_reset_email,
     verify_password_reset_token,
 )
+from .account_access import is_account_blocked, is_business_owner_account_blocked
 from .validators import validate_password_strength
 
 User = get_user_model()
@@ -33,6 +34,11 @@ logger = logging.getLogger(__name__)
 @permission_classes([IsAuthenticated])
 def check_authentication(request: Request) -> Response:
     """認証状態をチェックするエンドポイント"""
+    if is_account_blocked(request.user):
+        return Response(
+            {"authenticated": False},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
     return Response({
         "authenticated": True,
         "user_id": str(request.user.id),
@@ -67,7 +73,11 @@ def send_login_code(request: Request) -> Response:
 
         # ユーザー認証
         user = authenticate(request, username=email, password=password)
-        if not user or user.user_type != 'business_owner':
+        if (
+            not user
+            or user.user_type != 'business_owner'
+            or is_business_owner_account_blocked(user)
+        ):
             # ログイン失敗を記録
             record_login_failure(ip_address)
             # セキュリティ上の理由で、ユーザーが存在しない場合・パスワード相違・
@@ -160,11 +170,20 @@ def verify_login_code_api(request: Request) -> Response:
             )
 
         # 事業者以外のアカウントはこのAPIではログインさせない（多重防御）
-        if user.user_type != 'business_owner':
+        if (
+            not user.is_active
+            or user.user_type != 'business_owner'
+            or is_business_owner_account_blocked(user)
+        ):
             record_login_failure(ip_address)
             clear_verification_code(user)
             clear_login_session(user)
-            logger.warning(f"認証コード検証API: 事業者以外のログイン試行: email={email}, user_type={user.user_type}")
+            logger.warning(
+                '認証コード検証API: ログイン不可のアカウント: email=%s, user_type=%s, is_active=%s',
+                email,
+                user.user_type,
+                user.is_active,
+            )
             return Response(
                 {'error': 'メールアドレスまたはパスワードが正しくありません。'},
                 status=status.HTTP_401_UNAUTHORIZED
