@@ -2447,21 +2447,13 @@ def get_business_profile_by_subdomain(request: Request) -> Response:
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        support_email = ''
-        account_id = (business_profile.stripe_account_id or '').strip()
-        if account_id:
-            try:
-                account = stripe.Account.retrieve(account_id)
-                bp_data = account.get('business_profile') or {}
-                support_email = bp_data.get('support_email') or ''
-            except stripe.error.StripeError as stripe_err:  # type: ignore[attr-defined]
-                logger.warning(
-                    f"subdomain/profile: Stripe アカウント取得エラー: {stripe_err}"
-                )
+        # Stripe 由来の英語社名・問い合わせメール（取得失敗時はキャッシュ）
+        info = get_business_stripe_info(business_profile)
 
         return Response({
             'id': str(business_profile.id),
             'company_name': business_profile.company_name,
+            'company_name_en': info.get('company_name_en') or '',
             'subdomain': business_profile.subdomain,
             'is_active': business_profile.is_active,
             'service_areas': business_profile.service_areas or [],
@@ -2470,7 +2462,7 @@ def get_business_profile_by_subdomain(request: Request) -> Response:
             'nth_weekday_holidays': business_profile.nth_weekday_holidays or [],
             'daily_max_luggage': business_profile.daily_max_luggage,
             'temporary_closures': business_profile.temporary_closures or [],
-            'support_email': support_email,
+            'support_email': info.get('support_email') or '',
         }, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(
