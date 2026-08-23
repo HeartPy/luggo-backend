@@ -33,6 +33,7 @@ from .serializers import (
     LuggageBookingSerializer,
     LuggageBookingCreateSerializer,
     normalize_phone_number,
+    quantize_coordinate,
 )
 from .emails import (
     build_issuer_snapshot,
@@ -723,7 +724,11 @@ def _booking_fields_from_payload(payload: dict[str, Any]) -> Optional[dict[str, 
             fields[key] = normalize_phone_number(value) if value is not None else ''
         elif key in _BOOKING_COORDINATE_FIELDS:
             try:
-                fields[key] = float(value) if value not in (None, '') else None
+                if value in (None, ''):
+                    fields[key] = None
+                else:
+                    # DecimalField(max_digits=9, decimal_places=6) に合わせて丸める
+                    fields[key] = quantize_coordinate(value)
             except (ValueError, TypeError):
                 return None
         elif key.endswith('_geocode_status'):

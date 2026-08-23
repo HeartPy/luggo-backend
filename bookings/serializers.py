@@ -1,6 +1,7 @@
 import re
-from typing import Any, Dict
+from typing import Any, Dict, MutableMapping
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 from rest_framework import serializers
 from drivers.models import DriverProfile
@@ -8,6 +9,32 @@ from .models import LuggageBooking
 
 _JST = ZoneInfo("Asia/Tokyo")
 _MAX_BOOKING_DAYS = 180
+
+# Google 座標を DB の DecimalField(max_digits=9, decimal_places=6) に合わせる
+_COORD_QUANT = Decimal("0.000001")
+_COORDINATE_KEYS = (
+    "pickup_latitude",
+    "pickup_longitude",
+    "delivery_latitude",
+    "delivery_longitude",
+)
+
+
+def quantize_coordinate(value: Any) -> Any:
+    """緯度経度を小数点以下6桁に丸める（空はそのまま）"""
+    if value is None or value == "":
+        return value
+    try:
+        return Decimal(str(value)).quantize(_COORD_QUANT, rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError, TypeError):
+        return value
+
+
+def quantize_coordinate_fields(data: MutableMapping[str, Any]) -> None:
+    """data 内の緯度経度フィールドを in-place で丸める"""
+    for key in _COORDINATE_KEYS:
+        if key in data and data[key] not in (None, ""):
+            data[key] = quantize_coordinate(data[key])
 
 # 電話番号の許可形式
 # - 国際形式: 先頭が + の国番号付き（+ と 7〜15 桁）
@@ -240,6 +267,12 @@ class OwnerBookingUpdateSerializer(serializers.ModelSerializer[LuggageBooking]):
             raise serializers.ValidationError('指定できない配達状況です。')
         return value
 
+    def to_internal_value(self, data: Any) -> Dict[str, Any]:
+        # Google 由来の座標は桁が多いため、DB 制約前に丸める
+        mutable = data.copy() if hasattr(data, "copy") else dict(data)
+        quantize_coordinate_fields(mutable)
+        return super().to_internal_value(mutable)
+
     def validate(self, data: Dict[str, Any]) -> Dict[str, Any]:
         assignment_changed = 'driver' in data or 'pickup_driver' in data
         # driver は配達担当兼デフォルト集荷担当。通常の単一担当割り当てでは
@@ -380,6 +413,12 @@ class LuggageBookingCreateSerializer(serializers.ModelSerializer[LuggageBooking]
 
     def validate_customer_phone_number(self, value: str) -> str:
         return normalize_phone_number(value)
+
+    def to_internal_value(self, data: Any) -> Dict[str, Any]:
+        # Google 由来の座標は桁が多いため、DB 制約前に丸める
+        mutable = data.copy() if hasattr(data, "copy") else dict(data)
+        quantize_coordinate_fields(mutable)
+        return super().to_internal_value(mutable)
 
     def validate(self, data: Dict[str, Any]) -> Dict[str, Any]:
         pickup_date = data.get('pickup_date')
