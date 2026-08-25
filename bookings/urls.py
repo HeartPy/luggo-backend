@@ -11,7 +11,6 @@ urlpatterns: list[URLPattern] = [
     path('stripe/webhook', views.stripe_webhook, name='stripe-webhook'),
     path('lookup', views.lookup_booking, name='booking-lookup'),
     path('', views.LuggageBookingCreateView.as_view(), name='booking-create'),
-    path('<uuid:pk>', views.LuggageBookingDetailView.as_view(), name='booking-detail'),
     path('<uuid:booking_id>/cancel', views.cancel_booking, name='cancel-booking'),
     path('<uuid:booking_id>/receipt', views.download_receipt, name='booking-receipt'),
 ]

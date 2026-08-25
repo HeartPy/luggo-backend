@@ -120,10 +120,6 @@ class RegistrationRequestData(TypedDict, total=False):
     email: Required[str]
 
 
-class RegistrationTokenVerifyData(TypedDict, total=False):
-    token: Required[str]
-
-
 class BusinessAccountRegistrationData(TypedDict, total=False):
     token: Required[str]
     business_type: Required[str]
@@ -338,10 +334,6 @@ class RegistrationRequestSerializer(serializers.Serializer[RegistrationRequestDa
         if User.objects.filter(email=value.lower()).exists():
             raise serializers.ValidationError("このメールアドレスは既に登録されています。")
         return value.lower()
-
-
-class RegistrationTokenVerifySerializer(serializers.Serializer[RegistrationTokenVerifyData]):
-    token = serializers.CharField(required=True)
 
 
 class BusinessAccountRegistrationSerializer(serializers.Serializer[BusinessAccountRegistrationData]):

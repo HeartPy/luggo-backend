@@ -1,12 +1,11 @@
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated, AllowAny, BasePermission
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.request import Request
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import IntegrityError
@@ -31,7 +30,6 @@ from .serializers import (
     CustomAccountUpdateSerializer,
     BusinessAccountRegistrationSerializer,
     RegistrationRequestSerializer,
-    RegistrationTokenVerifySerializer,
 )
 from .utils import (
     generate_registration_token,
@@ -216,53 +214,6 @@ def _active_business_profile(user: Any) -> Optional[BusinessProfile]:
     if profile is None or not profile.is_active:
         return None
     return profile
-
-
-class HasStripeCustomAccount(BasePermission):
-    """
-    認証済みユーザーで、かつStripeアカウントが作成され、審査が通っていることを確認するパーミッションクラス
-    """
-
-    message = 'Stripeアカウント未作成または審査未通過のためアクセスできません。'
-
-    def has_permission(self, request: Request, view: Any) -> bool:
-        user = getattr(request, 'user', None)
-        if not user or not user.is_authenticated:
-            return False
-        if isinstance(user, AnonymousUser):
-            return False
-
-        business_profile = _active_business_profile(user)
-        if business_profile is None or not business_profile.stripe_account_id:
-            return False
-
-        # Stripeアカウントの審査状態を確認
-        try:
-            account_id = business_profile.stripe_account_id
-            account = stripe.Account.retrieve(account_id)
-
-            # 審査が通っているかチェック
-            # 1. currently_dueが空（必要な情報がすべて揃っている）
-            # 2. charges_enabledがTrue（決済が有効になっている）
-            requirements = getattr(account, 'requirements', None)
-            currently_due = requirements.get('currently_due', []) if requirements else []
-            charges_enabled = getattr(account, 'charges_enabled', False)
-
-            return len(currently_due) == 0 and charges_enabled
-        except stripe.error.StripeError as e:  # type: ignore[attr-defined]
-            logger.error(
-                f"Stripeアカウント審査状態確認エラー: account_id={mask_sensitive_id(account_id)}, "
-                f"error={str(e)}"
-            )
-            return False
-
-        except Exception as e:
-            logger.error(
-                f"Stripeアカウント審査状態確認予期しないエラー: account_id={mask_sensitive_id(account_id)}, "
-                f"error={str(e)}",
-                exc_info=True
-            )
-            return False
 
 
 @api_view(['GET'])
