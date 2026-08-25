@@ -2,7 +2,7 @@ from rest_framework import generics, status, permissions
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.request import Request
-from django.db.models import Q, QuerySet
+from django.db.models import Q
 from django.db import transaction, IntegrityError
 from django.conf import settings
 from django.utils import timezone
@@ -14,7 +14,6 @@ from datetime import date as date_type, datetime as dt_datetime, timezone as dt_
 import requests
 import stripe
 import logging
-import re
 import time
 
 from project.utils import mask_sensitive_id
@@ -957,56 +956,6 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
             )
 
 
-class LuggageBookingDetailView(generics.RetrieveUpdateAPIView):  # type: ignore[type-arg]
-    """予約詳細取得・更新（予約IDと認証コードで認証）"""
-
-    permission_classes = [permissions.AllowAny]
-
-    def get_queryset(self) -> QuerySet[LuggageBooking]:
-        """すべての予約を取得（認証コードで検証）"""
-        # get_object()で認証コードを検証するため、ここではすべての予約を返す
-        return LuggageBooking.objects.all()
-
-    def get_object(self) -> LuggageBooking:
-        """予約オブジェクトを取得（認証コードで検証）"""
-        # TODO: 認証コードの検証を追加（後ほど実装）
-        # verification_code = self.request.data.get('verification_code') or self.request.query_params.get('verification_code')
-        # if not verification_code:
-        #     raise Http404('認証コードが必要です。')
-
-        obj = super().get_object()
-
-        # TODO: 認証コードの検証を追加（後ほど実装）
-        # if obj.verification_code != verification_code:
-        #     raise Http404('認証コードが正しくありません。')
-
-        return obj
-
-    def get_serializer_class(self) -> type[LuggageBookingSerializer]:
-        """シリアライザークラスを返す"""
-        return LuggageBookingSerializer
-
-    def update(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        """予約更新のカスタム処理"""
-        partial = kwargs.pop('partial', False)
-        instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=partial)
-
-        if serializer.is_valid():
-            serializer.save()
-            return Response(
-                {
-                    'message': '予約が正常に更新されました。',
-                    'booking': serializer.data
-                },
-                status=status.HTTP_200_OK
-            )
-        return Response(
-            {'valid_errs': serializer.errors},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-
 def _card_details(payment_intent_id: str) -> Optional[dict[str, Any]]:
     """予約に紐づく Stripe 決済から、表示用の支払い方法情報を取得"""
     pid = (payment_intent_id or '').strip()
@@ -1117,22 +1066,7 @@ def download_receipt(request: Request, booking_id: UUID) -> HttpResponse:
 def cancel_booking(request: Request, booking_id: UUID) -> Response:
     """予約キャンセル（集荷前の予約のみ・全額返金）"""
     try:
-        # TODO: 認証コードの検証を追加（後ほど実装）
-        # verification_code = request.data.get('verification_code')
-        # if not verification_code:
-        #     return Response(
-        #         {'errMsg': '認証コードが必要です。'},
-        #         status=status.HTTP_400_BAD_REQUEST
-        #     )
-
         booking = LuggageBooking.objects.get(id=booking_id)
-
-        # TODO: 認証コードの検証を追加（後ほど実装）
-        # if booking.verification_code != verification_code:
-        #     return Response(
-        #         {'errMsg': '認証コードが正しくありません。'},
-        #         status=status.HTTP_401_UNAUTHORIZED
-        #     )
     except LuggageBooking.DoesNotExist:
         return Response(
             {'errMsg': '予約が見つかりません。'},
@@ -1191,37 +1125,6 @@ def cancel_booking(request: Request, booking_id: UUID) -> Response:
         {'message': '予約がキャンセルされました。'},
         status=status.HTTP_200_OK
     )
-
-
-@api_view(['GET'])
-@permission_classes([permissions.AllowAny])
-def booking_status(request: Request, booking_id: UUID) -> Response:
-    """予約ステータス取得（予約IDと認証コードで認証）"""
-    try:
-        # TODO: 認証コードの検証を追加（後ほど実装）
-        # verification_code = request.GET.get('verification_code')
-        # if not verification_code:
-        #     return Response(
-        #         {'errMsg': '認証コードが必要です。'},
-        #         status=status.HTTP_400_BAD_REQUEST
-        #     )
-
-        booking = LuggageBooking.objects.get(id=booking_id)
-
-        # TODO: 認証コードの検証を追加（後ほど実装）
-        # if booking.verification_code != verification_code:
-        #     return Response(
-        #         {'errMsg': '認証コードが正しくありません。'},
-        #         status=status.HTTP_401_UNAUTHORIZED
-        #     )
-    except LuggageBooking.DoesNotExist:
-        return Response(
-            {'errMsg': '予約が見つかりません。'},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-    serializer = LuggageBookingSerializer(booking)
-    return Response(serializer.data)
 
 
 @api_view(['POST'])

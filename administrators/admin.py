@@ -339,7 +339,6 @@ class DriverProfileAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-
         'license_expiry',
         'is_active',
         'is_available',
-        'total_deliveries',
         'created_at',
     ]
     search_fields = [
@@ -365,8 +364,6 @@ class DriverProfileAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-
         'max_daily_luggage_count',
         'operating_days_display',
         'license_expiry',
-        'total_deliveries',
-        'total_earnings_display',
         'deactivated_at',
         'created_at',
         'updated_at',
@@ -391,8 +388,6 @@ class DriverProfileAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-
                 'is_active',
                 'deactivated_at',
                 'is_available',
-                'total_deliveries',
-                'total_earnings_display',
             ),
         }),
         ('作成日時・更新日時', {
@@ -403,10 +398,6 @@ class DriverProfileAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-
     @admin.display(description='配達者名')
     def driver_name(self, obj: DriverProfile) -> str:
         return obj.user.get_full_name()
-
-    @admin.display(description='総売上')
-    def total_earnings_display(self, obj: DriverProfile) -> str:
-        return _format_yen(obj.total_earnings)
 
     @admin.display(description='定休日')
     def operating_days_display(self, obj: DriverProfile) -> str:

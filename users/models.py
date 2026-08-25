@@ -3,7 +3,7 @@ from django.contrib.auth.base_user import BaseUserManager
 from django.db import models
 from django.core.validators import RegexValidator
 from django.utils import timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 import uuid
 
 
@@ -80,18 +80,12 @@ class User(AbstractUser):
 
     # 共通プロフィール情報
     profile_picture = models.ImageField(upload_to='profile_pics/', blank=True, null=True)
-    date_of_birth = models.DateField(null=True, blank=True)
 
     # アカウント管理
-    is_verified = models.BooleanField(default=False)
     verification_code = models.CharField(max_length=6, blank=True)
     verification_code_expires_at = models.DateTimeField(null=True, blank=True, verbose_name='認証コード有効期限')
     verification_code_attempts = models.IntegerField(default=0, verbose_name='認証コード検証失敗回数')
     login_session_started_at = models.DateTimeField(null=True, blank=True, verbose_name='ログインセッション開始時刻')
-
-    # 通知設定
-    email_notifications = models.BooleanField(default=True)
-    sms_notifications = models.BooleanField(default=False)
 
     # 作成・更新日時
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日時')

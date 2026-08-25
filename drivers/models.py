@@ -1,4 +1,3 @@
-from decimal import Decimal
 from typing import Optional
 
 from django.db import models
@@ -74,8 +73,6 @@ class DriverProfile(models.Model):
         blank=True,
         verbose_name='無効化日時',
     )
-    total_deliveries = models.PositiveIntegerField(default=0, verbose_name='総配達数')
-    total_earnings = models.DecimalField(max_digits=10, decimal_places=2, default=0, verbose_name='総売上')
 
     # 作成日時・更新日時
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='作成日時')
@@ -125,11 +122,6 @@ class DriverProfile(models.Model):
         if driver_user.is_active != self.is_active:
             driver_user.is_active = self.is_active
             driver_user.save(update_fields=['is_active'])
-
-    def complete_delivery(self, earnings: Decimal) -> None:
-        self.total_deliveries += 1
-        self.total_earnings += earnings
-        self.save()
 
 
 class DriverInvitation(models.Model):
