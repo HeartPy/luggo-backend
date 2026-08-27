@@ -1,6 +1,6 @@
 from django.test import SimpleTestCase
 
-from .stripe_info import _extract_from_account
+from business_owners.stripe_info import _extract_from_account
 
 
 class StripeCompanyNameTests(SimpleTestCase):

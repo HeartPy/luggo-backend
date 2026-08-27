@@ -11,9 +11,9 @@ from project.geocoding import (
     GeocodingServiceError,
 )
 
-from .models import LuggageBooking
-from .tasks import geocode_booking_postal_coordinates
-from .views import materialize_booking
+from bookings.models import LuggageBooking
+from bookings.tasks import geocode_booking_postal_coordinates
+from bookings.views import materialize_booking
 
 
 User = get_user_model()

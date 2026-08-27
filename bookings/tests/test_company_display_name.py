@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from .emails import _business_signature, build_issuer_snapshot
-from .receipts import _resolve_issuer
+from bookings.emails import _business_signature, build_issuer_snapshot
+from bookings.receipts import _resolve_issuer
 
 
 class EmailBusinessDisplayNameTests(SimpleTestCase):

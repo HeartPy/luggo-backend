@@ -9,7 +9,7 @@ from bookings.models import LuggageBooking
 from business_owners.models import BusinessProfile
 from routing.services.google_routes import MatrixResult
 
-from .models import DriverProfile
+from drivers.models import DriverProfile
 
 
 User = get_user_model()

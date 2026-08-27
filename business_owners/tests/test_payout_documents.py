@@ -8,8 +8,8 @@ from django.utils import timezone
 from bookings.models import LuggageBooking
 from project.email import send_email
 from users.models import User
-from .models import BusinessProfile, PayoutDocumentDelivery
-from .payout_documents import (
+from business_owners.models import BusinessProfile, PayoutDocumentDelivery
+from business_owners.payout_documents import (
     _platform_seal_path,
     build_fee_invoice_pdf,
     build_payment_statement_pdf,
@@ -18,7 +18,7 @@ from .payout_documents import (
     previous_month_payout_date,
     send_delivery_record,
 )
-from .utils import _render_email, owner_email_addressee_context
+from business_owners.utils import _render_email, owner_email_addressee_context
 
 
 class OwnerEmailAddresseeTests(TestCase):

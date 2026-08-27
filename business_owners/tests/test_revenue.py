@@ -8,7 +8,7 @@ from rest_framework.test import APIClient
 
 from bookings.models import LuggageBooking
 from users.models import User
-from .models import BusinessProfile
+from business_owners.models import BusinessProfile
 
 
 class RevenueSummaryApiTests(TestCase):
