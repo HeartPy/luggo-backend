@@ -42,6 +42,12 @@ from .emails import (
     send_unmatched_payment_alert,
 )
 from .receipts import build_receipt_pdf, receipt_filename
+from .stripe_mock import (
+    E2E_PAYMENT_INTENT_PREFIX,
+    create_mock_payment_intent,
+    is_stripe_mock_enabled,
+    retrieve_mock_payment_intent,
+)
 from .tasks import geocode_booking_postal_coordinates
 
 
@@ -792,7 +798,22 @@ class LuggageBookingCreateView(generics.CreateAPIView):  # type: ignore[type-arg
             with transaction.atomic():
                 # 決済状態を確認
                 try:
-                    payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+                    # E2E モックの PaymentIntent は Stripe に存在しないため、
+                    # PendingBooking から復元する（モック有効時のみ）
+                    if (
+                        is_stripe_mock_enabled()
+                        and payment_intent_id.startswith(E2E_PAYMENT_INTENT_PREFIX)
+                    ):
+                        payment_intent: Any = retrieve_mock_payment_intent(
+                            payment_intent_id
+                        )
+                        if payment_intent is None:
+                            return Response(
+                                {'errMsg': '決済情報の確認に失敗しました。'},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
+                    else:
+                        payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
 
                     if payment_intent.status != 'succeeded':
                         logger.warning(
@@ -1224,33 +1245,35 @@ def create_payment_intent(request: Request) -> Response:
             )
 
         # 決済直前に事業者の Stripe アカウント審査が完了しているか確認
-        try:
-            connected_account = stripe.Account.retrieve(connected_account_id)
-        except stripe.error.StripeError as e:
-            logger.warning(
-                "create_payment_intent: failed to retrieve connected account: %s error=%s",
-                mask_sensitive_id(connected_account_id),
-                str(e),
-            )
-            return Response(
-                {'errMsg': 'この事業者はまだ決済の設定が完了していません。'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # （E2E モック時は Stripe を呼ばずスキップする）
+        if not is_stripe_mock_enabled():
+            try:
+                connected_account = stripe.Account.retrieve(connected_account_id)
+            except stripe.error.StripeError as e:
+                logger.warning(
+                    "create_payment_intent: failed to retrieve connected account: %s error=%s",
+                    mask_sensitive_id(connected_account_id),
+                    str(e),
+                )
+                return Response(
+                    {'errMsg': 'この事業者はまだ決済の設定が完了していません。'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-        account_requirements = getattr(connected_account, 'requirements', None)
-        currently_due = account_requirements.get('currently_due', []) if account_requirements else []
-        charges_enabled = getattr(connected_account, 'charges_enabled', False)
-        if not charges_enabled or currently_due:
-            logger.warning(
-                "create_payment_intent: connected account not ready: %s charges_enabled=%s currently_due=%s",
-                mask_sensitive_id(connected_account_id),
-                charges_enabled,
-                len(currently_due),
-            )
-            return Response(
-                {'errMsg': 'この事業者はまだ決済の設定が完了していません。'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            account_requirements = getattr(connected_account, 'requirements', None)
+            currently_due = account_requirements.get('currently_due', []) if account_requirements else []
+            charges_enabled = getattr(connected_account, 'charges_enabled', False)
+            if not charges_enabled or currently_due:
+                logger.warning(
+                    "create_payment_intent: connected account not ready: %s charges_enabled=%s currently_due=%s",
+                    mask_sensitive_id(connected_account_id),
+                    charges_enabled,
+                    len(currently_due),
+                )
+                return Response(
+                    {'errMsg': 'この事業者はまだ決済の設定が完了していません。'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
         # 集荷・配達地域バリデーション
         service_areas = business_profile.service_areas or []
@@ -1426,8 +1449,14 @@ def create_payment_intent(request: Request) -> Response:
         if customer_name:
             payment_intent_params['metadata']['customer_name'] = customer_name
 
-        # Payment Intentを作成
-        payment_intent = stripe.PaymentIntent.create(**payment_intent_params)
+        # Payment Intentを作成（E2E モック時は Stripe を呼ばず成功済み扱いで発行する）
+        if is_stripe_mock_enabled():
+            payment_intent = create_mock_payment_intent(
+                amount_in_yen,
+                payment_intent_params['metadata'],
+            )
+        else:
+            payment_intent = stripe.PaymentIntent.create(**payment_intent_params)
 
         # 決済成功後の予約作成フォールバック用に、検証済みの予約情報を保存する。
         # フロントの予約作成POSTが失敗・未実行でも、Webhook がこのデータから予約を作成できる。
