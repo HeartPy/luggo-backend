@@ -1189,6 +1189,62 @@ class RoutingAPITests(APITestCase):
         stale_run.refresh_from_db()
         self.assertEqual(stale_run.status, DailyAssignmentRun.Status.STALE)
 
+    def test_apply_makes_booking_visible_to_assigned_driver(self):
+        """適用後、担当配達者の「担当予約一覧」に予約が公開される"""
+        # Arrange: 集荷・配達とも同じ配達者に割り当てた draft run を用意
+        run = self._draft_run()
+        DailyTaskAssignment.objects.create(
+            run=run,
+            booking=self.booking,
+            driver=self.driver,
+            kind='pickup',
+        )
+        DailyTaskAssignment.objects.create(
+            run=run,
+            booking=self.booking,
+            driver=self.driver,
+            kind='delivery',
+        )
+        self.client.force_authenticate(self.owner.user)
+
+        # Act: 割当を適用
+        response = self.client.post(
+            f'/api/business/routing/runs/{run.id}/apply', {}, format='json'
+        )
+
+        # Assert: 同一配達者の集荷・配達は通常割当（driver のみ）に正規化される
+        self.assertEqual(response.status_code, 200)
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.driver, self.driver)
+        self.assertIsNone(self.booking.pickup_driver)
+
+        # Act: 担当配達者として自分の担当予約一覧を取得
+        self.client.force_authenticate(self.driver.user)
+        me_response = self.client.get(
+            '/api/drivers/me/bookings',
+            {'date': self.booking.pickup_date.isoformat()},
+        )
+
+        # Assert: 適用した予約が担当予約として見えることを確認
+        self.assertEqual(me_response.status_code, 200)
+        booking_numbers = {
+            item['booking_number'] for item in me_response.data['results']
+        }
+        self.assertIn(self.booking.booking_number, booking_numbers)
+
+        # Act: 他社の配達者として同じ日付の担当予約一覧を取得
+        other_owner = make_owner('visibility')
+        other_driver = make_driver(other_owner, 'visibility')
+        self.client.force_authenticate(other_driver.user)
+        other_response = self.client.get(
+            '/api/drivers/me/bookings',
+            {'date': self.booking.pickup_date.isoformat()},
+        )
+
+        # Assert: 他社の配達者にはこの予約が見えないことを確認
+        self.assertEqual(other_response.status_code, 200)
+        self.assertEqual(other_response.data['results'], [])
+
     def _draft_run(self):
         """現在の入力スナップショットから draft run を作成"""
         problem = build_tasks(self.owner, self.booking.pickup_date)
