@@ -53,9 +53,7 @@ class LuggageBooking(models.Model):
         on_delete=models.CASCADE,
         related_name='bookings',
         verbose_name='事業者',
-        null=True,
-        blank=True,
-        help_text='この予約を担当する事業者'
+        help_text='この予約を担当する事業者',
     )
     delivery_status = models.CharField(
         max_length=20,

@@ -1,9 +1,11 @@
 """予約テストの共通ヘルパー"""
 from datetime import date, timedelta
+from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 
 from bookings.models import LuggageBooking
+from business_owners.models import BusinessProfile
 
 User = get_user_model()
 
@@ -36,6 +38,21 @@ class BaseBookingTest:
         defaults.update(kwargs)
         return User.objects.create_user(**defaults)
 
+    def _ensure_business_owner(self):
+        """予約作成用の事業者プロフィールを用意"""
+        suffix = uuid4().hex[:8]
+        # subdomain は半角小文字英字のみ（3〜12文字）。
+        # uuid の hex（0-9a-f）をそのまま使うと数字が混ざるので、英字だけに変換。
+        letters = ''.join(chr(ord('a') + int(c, 16) % 26) for c in suffix)[:8]
+        subdomain = f't{letters}'[:12]
+        user = self._create_test_user(email=f'owner-{suffix}@example.com')
+        return BusinessProfile.objects.create(
+            user=user,
+            company_name='テスト事業者',
+            company_email=user.email,
+            subdomain=subdomain,
+        )
+
     def _create_test_booking(self, **kwargs):
         """テスト用予約オブジェクトを作成するヘルパーメソッド"""
         defaults = self._BOOKING_DEFAULTS.copy()
@@ -44,6 +61,8 @@ class BaseBookingTest:
         defaults['luggage_items'] = {'cabin': 1, 'checked': 0, 'oversize': 0}
         defaults['total_amount'] = 2000
         defaults.update(kwargs)
+        if defaults.get('business_owner') is None:
+            defaults['business_owner'] = self._ensure_business_owner()
         return LuggageBooking.objects.create(**defaults)
 
     def _get_booking_data(self, **kwargs):
