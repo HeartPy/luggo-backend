@@ -179,6 +179,10 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 # E2E テスト用: Stripe をモックする（本番誤用防止のため DEBUG 時のみ有効化できる）
 E2E_STRIPE_MOCK = DEBUG and config('E2E_STRIPE_MOCK', default=False, cast=bool)
 
+# E2E テスト用: ログイン認証コードを固定値にする（本番誤用防止のため DEBUG 時のみ有効化できる）
+E2E_LOGIN_CODE_MOCK = DEBUG and config('E2E_LOGIN_CODE_MOCK', default=False, cast=bool)
+E2E_LOGIN_CODE = '000000'
+
 # Stripe設定
 STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY', default='')
 STRIPE_WEBHOOK_SECRET = config('STRIPE_WEBHOOK_SECRET', default='')

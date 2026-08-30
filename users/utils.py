@@ -15,7 +15,11 @@ logger = logging.getLogger(__name__)
 
 def generate_login_verification_code(user: User) -> str:
     """ログイン用認証コードを生成（6桁の数字）"""
-    code = ''.join([str(secrets.randbelow(10)) for _ in range(6)])
+    if settings.E2E_LOGIN_CODE_MOCK:
+        # E2E テスト用の固定コード（DEBUG 時のみ有効）
+        code = settings.E2E_LOGIN_CODE
+    else:
+        code = ''.join([str(secrets.randbelow(10)) for _ in range(6)])
     expires_at = timezone.now() + timezone.timedelta(minutes=3)
     now = timezone.now()
 
