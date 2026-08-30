@@ -1,5 +1,6 @@
 """配達者本人向けダッシュボード API（me/bookings, me/route）のテスト"""
-from datetime import date, timedelta
+from datetime import timedelta
+from django.utils import timezone
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
@@ -43,12 +44,12 @@ def make_driver(owner, suffix='me', latitude='35.0', longitude='139.0'):
         departure_latitude=latitude,
         departure_longitude=longitude,
         max_daily_stops=10,
-        license_expiry=date.today() + timedelta(days=365),
+        license_expiry=timezone.localdate() + timedelta(days=365),
     )
 
 
 def make_booking(owner, suffix='me', **overrides):
-    service_date = date.today() + timedelta(days=2)
+    service_date = timezone.localdate() + timedelta(days=2)
     values = {
         'business_owner': owner,
         'pickup_location_name': 'Pickup',
@@ -80,7 +81,7 @@ class DriverMyBookingsTests(APITestCase):
     def setUp(self):
         self.owner = make_owner('list')
         self.driver = make_driver(self.owner, 'list')
-        self.service_date = date.today() + timedelta(days=2)
+        self.service_date = timezone.localdate() + timedelta(days=2)
 
     def _get(self, **params):
         params.setdefault('date', self.service_date.isoformat())
@@ -205,7 +206,7 @@ class DriverMyRouteTests(APITestCase):
     def setUp(self):
         self.owner = make_owner('route')
         self.driver = make_driver(self.owner, 'route')
-        self.service_date = date.today() + timedelta(days=2)
+        self.service_date = timezone.localdate() + timedelta(days=2)
 
     def _get(self, **params):
         params.setdefault('date', self.service_date.isoformat())
@@ -515,7 +516,7 @@ class DriverRouteCacheTests(APITestCase):
     def setUp(self):
         self.owner = make_owner('cache')
         self.driver = make_driver(self.owner, 'cache')
-        self.service_date = date.today() + timedelta(days=2)
+        self.service_date = timezone.localdate() + timedelta(days=2)
         self.client.force_authenticate(self.driver.user)
 
     def _get(self, **params):

@@ -1,5 +1,6 @@
 """予約テストの共通ヘルパー"""
-from datetime import date, timedelta
+from datetime import timedelta
+from django.utils import timezone
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -56,8 +57,8 @@ class BaseBookingTest:
     def _create_test_booking(self, **kwargs):
         """テスト用予約オブジェクトを作成するヘルパーメソッド"""
         defaults = self._BOOKING_DEFAULTS.copy()
-        defaults['pickup_date'] = date.today() + timedelta(days=1)
-        defaults['delivery_date'] = date.today() + timedelta(days=1)
+        defaults['pickup_date'] = timezone.localdate() + timedelta(days=1)
+        defaults['delivery_date'] = timezone.localdate() + timedelta(days=1)
         defaults['luggage_items'] = {'cabin': 1, 'checked': 0, 'oversize': 0}
         defaults['total_amount'] = 2000
         defaults.update(kwargs)
@@ -69,8 +70,8 @@ class BaseBookingTest:
         """テスト用予約データを取得するヘルパーメソッド（API用）"""
         defaults = self._BOOKING_DEFAULTS.copy()
         # 23時以降は翌日分の予約受付が締め切られるため、時刻に左右されない日付にする
-        pickup_date = date.today() + timedelta(days=2)
-        delivery_date = date.today() + timedelta(days=2)
+        pickup_date = timezone.localdate() + timedelta(days=2)
+        delivery_date = timezone.localdate() + timedelta(days=2)
         defaults['pickup_date'] = pickup_date.isoformat()
         defaults['delivery_date'] = delivery_date.isoformat()
         # 各荷物の数量フィールド（views.pyでluggage_itemsとtotal_amountに変換される）

@@ -108,7 +108,7 @@ class LuggageBookingAPITest(BaseBookingTest, APITestCase):
         # Arrange: APIエンドポイントと無効なデータを準備
         url = reverse('bookings:booking-create')
         invalid_data = self._get_booking_data(
-            pickup_date=(date.today() - timedelta(days=1)).isoformat()  # 過去の日付
+            pickup_date=(timezone.localdate() - timedelta(days=1)).isoformat()  # 過去の日付
         )
 
         # Act: 無効なデータで予約作成APIを呼び出し
@@ -233,7 +233,7 @@ class BookingDeadlineBoundaryTest(TestCase):
 
         # Act & Assert: バリデーションエラーになる
         with self.assertRaises(Exception):
-            serializer.validate_pickup_date(date.today())
+            serializer.validate_pickup_date(timezone.localdate())
 
 
 @override_settings(E2E_STRIPE_MOCK=False)
@@ -255,7 +255,7 @@ class CreatePaymentIntentAPITest(BaseBookingTest, APITestCase):
         self.url = reverse('bookings:create-payment-intent')
 
     def _payload(self, **kwargs):
-        pickup_date = date.today() + timedelta(days=2)
+        pickup_date = timezone.localdate() + timedelta(days=2)
         data = {
             'total_amount': 1000,
             'cabin': 1,
@@ -544,7 +544,7 @@ class BookingDriverAssignmentTest(BaseBookingTest, TestCase):
         return DriverProfile.objects.create(
             user=user,
             business_owner=self.profile,
-            license_expiry=date.today() + timedelta(days=365),
+            license_expiry=timezone.localdate() + timedelta(days=365),
         )
 
     def _serializer(self, data):

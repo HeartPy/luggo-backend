@@ -1,5 +1,6 @@
 """ユーザー（旅行者）の予約照会・キャンセル・返金APIのテスト"""
-from datetime import date, timedelta
+from datetime import timedelta
+from django.utils import timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
@@ -82,8 +83,8 @@ class BookingCancelAPITest(BaseBookingTest, APITestCase):
         """集荷日前日23時より前（返金対象）の予約を作成"""
         defaults = {
             'business_owner': self.profile,
-            'pickup_date': date.today() + timedelta(days=5),
-            'delivery_date': date.today() + timedelta(days=5),
+            'pickup_date': timezone.localdate() + timedelta(days=5),
+            'delivery_date': timezone.localdate() + timedelta(days=5),
         }
         defaults.update(kwargs)
         return self._create_test_booking(**defaults)
@@ -165,8 +166,8 @@ class BookingCancelAPITest(BaseBookingTest, APITestCase):
         """返金期限（集荷日前日23時）を過ぎたキャンセルは返金せずキャンセルのみ行う"""
         # Arrange: 集荷日当日（返金期限超過）の予約を用意
         booking = self._refundable_booking(
-            pickup_date=date.today(),
-            delivery_date=date.today(),
+            pickup_date=timezone.localdate(),
+            delivery_date=timezone.localdate(),
         )
         self.assertFalse(booking.is_refundable_on_cancel())
 

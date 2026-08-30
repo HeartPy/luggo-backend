@@ -1935,8 +1935,6 @@ def get_current_business_profile(request: Request) -> Response:
                 business_profile.public_info_consent_at.isoformat()
                 if business_profile.public_info_consent_at else None
             ),
-            'total_orders_completed': business_profile.total_orders_completed,
-            'total_revenue': str(business_profile.total_revenue),
             'is_active': business_profile.is_active,
             'deactivated_at': business_profile.deactivated_at.isoformat() if business_profile.deactivated_at else None,
             'created_at': business_profile.created_at.isoformat(),

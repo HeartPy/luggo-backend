@@ -1,5 +1,6 @@
 """運営者用 Django Admin の権限制御のテスト"""
-from datetime import date, timedelta
+from datetime import timedelta
+from django.utils import timezone
 
 from django.test import TestCase
 from django.urls import reverse
@@ -94,7 +95,7 @@ class BusinessProfileAdminTests(AdminSiteTestCase):
         driver = DriverProfile.objects.create(
             user=driver_user,
             business_owner=self.business_profile,
-            license_expiry=date.today() + timedelta(days=365),
+            license_expiry=timezone.localdate() + timedelta(days=365),
         )
         self.assertTrue(driver.is_active)
 
@@ -127,7 +128,7 @@ class BusinessProfileAdminTests(AdminSiteTestCase):
         driver = DriverProfile.objects.create(
             user=driver_user,
             business_owner=self.business_profile,
-            license_expiry=date.today() + timedelta(days=365),
+            license_expiry=timezone.localdate() + timedelta(days=365),
         )
         self.business_profile.is_active = False
         self.business_profile.save()
@@ -176,10 +177,10 @@ class LuggageBookingAdminTests(AdminSiteTestCase):
             business_owner=self.business_profile,
             pickup_location_name='ホテルA',
             pickup_location_address='東京都千代田区1-1',
-            pickup_date=date.today() + timedelta(days=3),
+            pickup_date=timezone.localdate() + timedelta(days=3),
             delivery_location_name='ホテルB',
             delivery_location_address='大阪府大阪市1-1',
-            delivery_date=date.today() + timedelta(days=4),
+            delivery_date=timezone.localdate() + timedelta(days=4),
             customer_name='山田太郎',
             customer_email='taro@example.com',
             customer_phone_number='+819012345678',
@@ -283,7 +284,7 @@ class DriverProfileAdminTests(AdminSiteTestCase):
         self.driver = DriverProfile.objects.create(
             user=self.driver_user,
             business_owner=self.business_profile,
-            license_expiry=date.today() + timedelta(days=365),
+            license_expiry=timezone.localdate() + timedelta(days=365),
         )
 
     def test_can_deactivate_driver_without_changing_availability(self) -> None:

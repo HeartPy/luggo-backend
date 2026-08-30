@@ -50,7 +50,9 @@ class LuggageBooking(models.Model):
     )
     business_owner = models.ForeignKey(
         'business_owners.BusinessProfile',
-        on_delete=models.CASCADE,
+        # 予約は会計・監査の証跡のため、事業者の物理削除では消さない
+        # （運用上の停止は BusinessProfile.is_active のソフト無効化で行う）
+        on_delete=models.PROTECT,
         related_name='bookings',
         verbose_name='事業者',
         help_text='この予約を担当する事業者',
@@ -415,6 +417,9 @@ class LuggageBooking(models.Model):
             models.Index(fields=['delivery_date']),
             models.Index(fields=['customer_name']),
             models.Index(fields=['delivered_at']),
+            models.Index(fields=['business_owner', 'pickup_date']),
+            models.Index(fields=['business_owner', 'delivery_date']),
+            models.Index(fields=['business_owner', 'delivery_status']),
         ]
         constraints = [
             # 同一決済（payment_intent_id）に対する予約の二重作成を DB レベルで防ぐ
@@ -493,8 +498,8 @@ class LuggageBooking(models.Model):
         return now < self.refund_deadline()
 
     def days_until_pickup(self) -> int:
-        """集荷日までの日数"""
-        today = date.today()
+        """集荷日までの日数（Asia/Tokyo の日付基準）"""
+        today = timezone.localdate() if settings.USE_TZ else date.today()
         if self.pickup_date >= today:
             return (self.pickup_date - today).days
         return 0

@@ -4,7 +4,8 @@
 自社スコープの認可（他社の予約・配達者に触れないこと）を各APIで確認する。
 配達完了時の送金が statuses 経路で呼ばれることもここで確認する。
 """
-from datetime import date, timedelta
+from datetime import timedelta
+from django.utils import timezone
 from unittest.mock import patch
 
 from django.urls import reverse
@@ -50,7 +51,7 @@ class OwnerAPIBaseTest(BaseBookingTest, APITestCase):
 
     def _month_params(self):
         """予約日（今日+1）が必ず範囲に入る年月パラメータ"""
-        today = date.today()
+        today = timezone.localdate()
         return {
             'month_from': today.strftime('%Y-%m'),
             'month_to': (today + timedelta(days=40)).strftime('%Y-%m'),
@@ -67,7 +68,7 @@ class OwnerAPIBaseTest(BaseBookingTest, APITestCase):
         return DriverProfile.objects.create(
             user=user,
             business_owner=business_profile,
-            license_expiry=date.today() + timedelta(days=365),
+            license_expiry=timezone.localdate() + timedelta(days=365),
         )
 
 
