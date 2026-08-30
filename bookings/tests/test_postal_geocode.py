@@ -1,4 +1,5 @@
-from datetime import date, timedelta
+from datetime import timedelta
+from django.utils import timezone
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -36,7 +37,7 @@ def make_owner(suffix='one'):
 
 def make_booking(owner, suffix='one', **overrides):
     """座標なし・郵便番号ありの手入力予約を作成。overrides で上書きできる。"""
-    service_date = date.today() + timedelta(days=2)
+    service_date = timezone.localdate() + timedelta(days=2)
     values = {
         'business_owner': owner,
         'pickup_location_name': 'Pickup',
@@ -178,7 +179,7 @@ class MaterializeBookingGeocodeScheduleTests(TestCase):
     """予約作成時の概算座標補完ジョブ投入のテスト"""
 
     def _booking_fields(self, **overrides):
-        service_date = date.today() + timedelta(days=2)
+        service_date = timezone.localdate() + timedelta(days=2)
         fields = {
             'pickup_location_name': 'Pickup',
             'pickup_location_address': '東京都千代田区丸の内',

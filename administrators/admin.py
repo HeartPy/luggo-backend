@@ -237,8 +237,6 @@ class BusinessProfileAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # djang
         'operating_days_display',
         'daily_max_luggage',
         'pricing_rules',
-        'total_orders_completed',
-        'total_revenue_display',
         'stripe_account_id',
         'stripe_review_status',
         'stripe_charges_enabled',
@@ -251,10 +249,6 @@ class BusinessProfileAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # djang
         'updated_at',
         'deactivated_at',
     ]
-
-    @admin.display(description='総売上')
-    def total_revenue_display(self, obj: BusinessProfile) -> str:
-        return _format_yen(obj.total_revenue)
 
     @admin.display(description='定休日')
     def operating_days_display(self, obj: BusinessProfile) -> str:
@@ -295,9 +289,6 @@ class BusinessProfileAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # djang
         ('料金設定', {
             'fields': ('pricing_rules',),
             'classes': ('collapse',),
-        }),
-        ('実績', {
-            'fields': ('total_orders_completed', 'total_revenue_display'),
         }),
         ('アカウント状態', {
             'fields': ('is_active', 'deactivated_at'),

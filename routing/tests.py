@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta, time as dt_time
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
@@ -55,13 +55,13 @@ def make_driver(owner, suffix='one', latitude='35.0', longitude='139.0'):
         departure_latitude=latitude,
         departure_longitude=longitude,
         max_daily_stops=10,
-        license_expiry=date.today() + timedelta(days=365),
+        license_expiry=timezone.localdate() + timedelta(days=365),
     )
 
 
 def make_booking(owner, suffix='one', **overrides):
     """検証済み座標付きの当日ペア予約を作成。overrides で個別フィールドを上書きできる。"""
-    service_date = date.today() + timedelta(days=2)
+    service_date = timezone.localdate() + timedelta(days=2)
     values = {
         'business_owner': owner,
         'pickup_location_name': 'Pickup',
@@ -156,7 +156,7 @@ class TaskBuilderTests(TestCase):
         owner = make_owner()
         make_driver(owner)
         booking = make_booking(
-            owner, delivery_date=date.today() + timedelta(days=3)
+            owner, delivery_date=timezone.localdate() + timedelta(days=3)
         )
 
         # Act: それぞれのサービス日でタスクを構築
@@ -169,7 +169,7 @@ class TaskBuilderTests(TestCase):
 
     def test_booking_serializer_rejects_out_of_range_coordinates(self):
         # Arrange: 緯度が範囲外の予約データを用意
-        service_date = date.today() + timedelta(days=2)
+        service_date = timezone.localdate() + timedelta(days=2)
         serializer = LuggageBookingCreateSerializer(data={
             'payment_intent_id': 'pi-coordinate-test',
             'pickup_location_name': 'Pickup',
@@ -672,7 +672,7 @@ class DriverDepartureTimeTests(TestCase):
 
     def test_resolve_driver_departure_time_uses_driver_shift(self):
         # Arrange: 未来日とシフト開始時刻付きドライバーを用意
-        service_date = date.today() + timedelta(days=3)
+        service_date = timezone.localdate() + timedelta(days=3)
         driver = DriverInput(
             id='1',
             latitude=35.0,
@@ -692,7 +692,7 @@ class DriverDepartureTimeTests(TestCase):
 
     def test_resolve_driver_departure_time_clamps_past_to_now(self):
         # Arrange: 過去日のサービス日を用意
-        service_date = date.today() - timedelta(days=1)
+        service_date = timezone.localdate() - timedelta(days=1)
         driver = DriverInput(
             id='1',
             latitude=35.0,
@@ -728,7 +728,7 @@ class DriverDepartureTimeTests(TestCase):
         }]
         session.post.return_value = response
         departure = timezone.make_aware(
-            datetime.combine(date.today() + timedelta(days=2), dt_time(9, 0))
+            datetime.combine(timezone.localdate() + timedelta(days=2), dt_time(9, 0))
         )
 
         # Act: 出発時刻付きで行列を計算
@@ -759,7 +759,7 @@ class DriverDepartureTimeTests(TestCase):
         }]
         session.post.return_value = response
         departure = timezone.make_aware(
-            datetime.combine(date.today() + timedelta(days=2), dt_time(9, 0))
+            datetime.combine(timezone.localdate() + timedelta(days=2), dt_time(9, 0))
         )
 
         # Act: 出発時刻付きで行列を計算
@@ -882,7 +882,7 @@ class AssignmentTaskTests(TestCase):
         booking = make_booking(
             owner,
             'task',
-            delivery_date=date.today() + timedelta(days=3),
+            delivery_date=timezone.localdate() + timedelta(days=3),
         )
         problem = build_tasks(owner, booking.pickup_date)
         snapshot = problem.snapshot()
@@ -918,7 +918,7 @@ class AssignmentTaskTests(TestCase):
             'manual-flag',
             driver=driver,
             delivery_manually_assigned=True,
-            delivery_date=date.today() + timedelta(days=3),
+            delivery_date=timezone.localdate() + timedelta(days=3),
         )
         auto = make_booking(
             owner,
@@ -927,7 +927,7 @@ class AssignmentTaskTests(TestCase):
             delivery_manually_assigned=False,
             pickup_latitude='35.5',
             pickup_longitude='139.5',
-            delivery_date=date.today() + timedelta(days=3),
+            delivery_date=timezone.localdate() + timedelta(days=3),
         )
         problem = build_tasks(owner, manual.pickup_date)
         run = DailyAssignmentRun.objects.create(
@@ -959,7 +959,7 @@ class RoutingAPITests(APITestCase):
         self.booking = make_booking(
             self.owner,
             'api',
-            delivery_date=date.today() + timedelta(days=3),
+            delivery_date=timezone.localdate() + timedelta(days=3),
         )
 
     def test_assign_requires_authentication(self):

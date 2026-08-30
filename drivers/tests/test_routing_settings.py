@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -46,7 +46,7 @@ def make_driver(owner, suffix='one', latitude='35.0', longitude='139.0'):
         departure_latitude=latitude,
         departure_longitude=longitude,
         max_daily_stops=10,
-        license_expiry=date.today() + timedelta(days=365),
+        license_expiry=timezone.localdate() + timedelta(days=365),
     )
 
 
@@ -381,7 +381,7 @@ class DriverRoutingSettingsTests(APITestCase):
             email='weak-password@example.com',
             last_name='Password',
             first_name='Driver',
-            license_expiry=date.today() + timedelta(days=365),
+            license_expiry=timezone.localdate() + timedelta(days=365),
             token_digest=token_digest(raw_token),
             expires_at=timezone.now() + timedelta(days=7),
         )
@@ -414,7 +414,7 @@ class DriverRoutingSettingsTests(APITestCase):
             email='mismatch-password@example.com',
             last_name='Password',
             first_name='Driver',
-            license_expiry=date.today() + timedelta(days=365),
+            license_expiry=timezone.localdate() + timedelta(days=365),
             token_digest=token_digest(raw_token),
             expires_at=timezone.now() + timedelta(days=7),
         )

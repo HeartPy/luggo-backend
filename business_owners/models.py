@@ -240,10 +240,6 @@ class BusinessProfile(models.Model):
         verbose_name='料金設定の一時保存日時',
     )
 
-    # 実績
-    total_orders_completed = models.PositiveIntegerField(default=0, verbose_name='総注文数')
-    total_revenue = models.DecimalField(max_digits=12, decimal_places=2, default=0, verbose_name='総売上')
-
     # アカウント状態
     is_active = models.BooleanField(
         default=True,

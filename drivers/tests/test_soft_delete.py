@@ -1,5 +1,6 @@
 """配達者の利用停止・再招待まわりのテスト"""
-from datetime import date, timedelta
+from datetime import timedelta
+from django.utils import timezone
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -43,7 +44,7 @@ def make_driver(owner, suffix='soft-del', latitude='35.0', longitude='139.0'):
         departure_latitude=latitude,
         departure_longitude=longitude,
         max_daily_stops=10,
-        license_expiry=date.today() + timedelta(days=365),
+        license_expiry=timezone.localdate() + timedelta(days=365),
     )
 
 
@@ -57,7 +58,7 @@ class DriverSoftDeleteTests(APITestCase):
 
     def test_delete_deactivates_driver_and_unassigns_active_bookings(self):
         # Arrange: 未完了の担当予約を用意
-        today = date.today()
+        today = timezone.localdate()
         booking = LuggageBooking.objects.create(
             business_owner=self.owner,
             driver=self.driver,
@@ -132,7 +133,7 @@ class DriverSoftDeleteTests(APITestCase):
                 'first_name': '太郎',
                 'email': self.driver.user.email,
                 'departure_address': '東京都千代田区丸の内1-1-1',
-                'license_expiry': (date.today() + timedelta(days=365)).isoformat(),
+                'license_expiry': (timezone.localdate() + timedelta(days=365)).isoformat(),
                 'is_available': 'true',
             },
             format='multipart',

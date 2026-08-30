@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -47,7 +47,7 @@ def make_driver(owner, suffix='one'):
     return DriverProfile.objects.create(
         user=user,
         business_owner=owner,
-        license_expiry=date.today() + timedelta(days=365),
+        license_expiry=timezone.localdate() + timedelta(days=365),
     )
 
 
@@ -59,7 +59,7 @@ def make_delivered_booking(owner, *, driver, pickup_driver=None, amount=10000, *
     サービス日は昨日にし、配達完了済み予約として日付が矛盾しないようにする。
     月次統計の当月判定は delivered_at（現在時刻）で行う。
     """
-    service_date = date.today() - timedelta(days=1)
+    service_date = timezone.localdate() - timedelta(days=1)
     values = {
         'business_owner': owner,
         'pickup_location_name': 'Pickup',

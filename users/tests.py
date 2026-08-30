@@ -1,5 +1,5 @@
 """事業者の無効化がログインとダッシュボード API を止めることのテスト"""
-from datetime import date, timedelta
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -262,7 +262,7 @@ class DriverLoginTests(TestCase):
         self.driver = DriverProfile.objects.create(
             user=self.driver_user,
             business_owner=self.business_profile,
-            license_expiry=date.today() + timedelta(days=365),
+            license_expiry=timezone.localdate() + timedelta(days=365),
         )
         self.client = APIClient()
         cache.clear()
@@ -327,7 +327,7 @@ class InactiveDriverAccessTests(TestCase):
         self.driver = DriverProfile.objects.create(
             user=self.driver_user,
             business_owner=self.business_profile,
-            license_expiry=date.today() + timedelta(days=365),
+            license_expiry=timezone.localdate() + timedelta(days=365),
         )
         self.client = APIClient()
 

@@ -1,4 +1,5 @@
-from datetime import date, timedelta
+from datetime import timedelta
+from django.utils import timezone
 from io import StringIO
 from unittest.mock import Mock, patch
 
@@ -30,7 +31,7 @@ def make_owner(suffix='one'):
 
 def make_booking(owner, suffix='one', **overrides):
     """検証済み座標付きの当日ペア予約を作成。overrides で個別フィールドを上書きできる。"""
-    service_date = date.today() + timedelta(days=2)
+    service_date = timezone.localdate() + timedelta(days=2)
     values = {
         'business_owner': owner,
         'pickup_location_name': 'Pickup',
