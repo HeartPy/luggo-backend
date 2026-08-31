@@ -3,6 +3,9 @@ from . import views
 
 
 urlpatterns: list[URLPattern] = [
+    # 外形監視用ヘルスチェック
+    path('health', views.health, name='health'),
+
     # CSRF関連
     path('csrf', views.get_csrf_token, name='get_csrf_token'),
 
