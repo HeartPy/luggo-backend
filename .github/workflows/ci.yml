@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        # DB が起動完了してからテストを開始する
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements/**
+
+      - name: 依存パッケージをインストール
+        run: uv pip install --system -r requirements/development.txt
+
+      - name: 環境ファイルを用意
+        # settings.py が .env.development を必須で読むため example から作成する
+        # （SECRET_KEY 等はダミー値のままでテスト実行に支障なし）
+        run: cp .env.development.example .env.development
+
+      - name: テストを実行
+        env:
+          # サービスコンテナの Postgres に接続（未設定だと SQLite になる）
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: python manage.py test
