@@ -1,6 +1,38 @@
 """project 共通 API（ヘルスチェック）のテスト"""
-from django.test import TestCase
+import re
+
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
+
+from project.tenant_origins import TENANT_SUBDOMAIN_ORIGIN_REGEX
+
+
+class TenantSubdomainOriginRegexTests(SimpleTestCase):
+    """本番 CORS 用の事業者サブドメイン正規表現"""
+
+    def test_allows_valid_tenant_origin(self) -> None:
+        # Act: 3〜12 文字の事業者サブドメイン Origin を正規表現で照合
+        match = re.fullmatch(TENANT_SUBDOMAIN_ORIGIN_REGEX, "https://acme.luggo.delivery")
+
+        # Assert: 許可対象としてマッチする
+        self.assertIsNotNone(match)
+
+    def test_rejects_too_short_subdomain(self) -> None:
+        # Act: 2 文字の短すぎるサブドメイン Origin を正規表現で照合
+        match = re.fullmatch(TENANT_SUBDOMAIN_ORIGIN_REGEX, "https://ab.luggo.delivery")
+
+        # Assert: マッチしない
+        self.assertIsNone(match)
+
+    def test_rejects_foreign_domain(self) -> None:
+        # Act: luggo.delivery 以外のドメイン Origin を正規表現で照合
+        match = re.fullmatch(
+            TENANT_SUBDOMAIN_ORIGIN_REGEX,
+            "https://acme.evil.com",
+        )
+
+        # Assert: マッチしない
+        self.assertIsNone(match)
 
 
 class HealthCheckTests(TestCase):

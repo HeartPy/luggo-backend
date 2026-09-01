@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 RESEND_API_URL = "https://api.resend.com/emails"
 
+LUGO_SUPPORT_EMAIL = "support@luggo.delivery"
+
+
 def operations_recipients() -> list[str]:
     """運営への通知先メールアドレス一覧を返す"""
     recipients = getattr(settings, "OPERATIONS_NOTIFICATION_EMAIL", "") or ""
@@ -36,11 +39,13 @@ def operations_recipients() -> list[str]:
 def email_signature() -> str:
     """LugGo（運営）から送るメールに付与する共通の署名"""
     frontend_url = getattr(settings, "FRONTEND_BASE_URL", "") or ""
+    website_line = f"Webサイト：{frontend_url}\n" if frontend_url else ""
     return (
         "※このメールは送信専用です。ご返信いただいてもお答えできません。\n\n"
         "----------------------------------------\n"
         "LugGo（ラグゴー）運営事務局\n"
-        f"{frontend_url}\n"
+        f"お問い合わせ：{LUGO_SUPPORT_EMAIL}\n"
+        f"{website_line}"
         "----------------------------------------"
     )
 
