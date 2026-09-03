@@ -1019,11 +1019,22 @@ def _card_details(payment_intent_id: str) -> Optional[dict[str, Any]]:
     }
 
 
-@api_view(['GET'])
+@api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def lookup_booking(request: Request) -> Response:
     """予約番号から予約情報を取得（旅行者向けの予約内容確認・キャンセル画面用）"""
-    booking_number = (request.GET.get('booking_number') or '').strip()
+    client_ip = get_client_ip(request)
+    if not verify_turnstile(request.data.get('turnstile_token', ''), client_ip):
+        logger.warning("lookup_booking: Turnstile 検証失敗: ip=%s", client_ip)
+        return Response(
+            {
+                'err_code': 'turnstile_failed',
+                'errMsg': 'セキュリティ確認に失敗しました。ページを再読み込みして再度お試しください。',
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    booking_number = (request.data.get('booking_number') or '').strip()
     if not booking_number:
         return Response(
             {'errMsg': '予約番号を入力してください。'},

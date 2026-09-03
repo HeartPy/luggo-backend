@@ -29,10 +29,13 @@ class BookingLookupAPITest(BaseBookingTest, APITestCase):
         self.booking = self._create_test_booking(business_owner=self.profile)
         self.url = reverse('bookings:booking-lookup')
 
+    def _lookup(self, **data):
+        return self.client.post(self.url, data, format='json')
+
     def test_lookup_requires_booking_number(self):
         """予約番号なしでは照会できない"""
         # Act: 予約番号なしで照会APIを呼び出し
-        response = self.client.get(self.url)
+        response = self._lookup()
 
         # Assert: 400 になることを確認
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -40,10 +43,26 @@ class BookingLookupAPITest(BaseBookingTest, APITestCase):
     def test_lookup_returns_404_for_unknown_number(self):
         """存在しない予約番号は見つからない扱いになる"""
         # Act: 存在しない予約番号で照会APIを呼び出し
-        response = self.client.get(self.url, {'booking_number': 'LG-XXXX-XXXX-XXXX'})
+        response = self._lookup(booking_number='LG-XXXX-XXXX-XXXX')
 
         # Assert: 404 になることを確認
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_lookup_rejects_when_turnstile_fails(self):
+        """Turnstile 検証失敗時は照会できない"""
+        # Arrange: Turnstile が「常に失敗」するテスト用 Secret に切り替える
+        with self.settings(
+            TURNSTILE_SECRET_KEY='2x0000000000000000000000000000000AA'
+        ):
+            # Act: 存在する予約番号で照会を試す
+            response = self._lookup(
+                booking_number=self.booking.booking_number,
+                turnstile_token='any-token',
+            )
+
+        # Assert: 403 になり予約情報は返らない
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data.get('err_code'), 'turnstile_failed')
 
     @patch('bookings.views.stripe.PaymentIntent.retrieve')
     def test_lookup_returns_booking_with_cancelability(self, retrieve_mock):
@@ -52,9 +71,7 @@ class BookingLookupAPITest(BaseBookingTest, APITestCase):
         retrieve_mock.return_value = SimpleNamespace(payment_method=None)
 
         # Act: 予約番号で照会APIを呼び出し
-        response = self.client.get(
-            self.url, {'booking_number': self.booking.booking_number}
-        )
+        response = self._lookup(booking_number=self.booking.booking_number)
 
         # Assert: 予約情報とキャンセル可否が返ることを確認
         self.assertEqual(response.status_code, status.HTTP_200_OK)
