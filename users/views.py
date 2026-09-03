@@ -25,6 +25,9 @@ from .utils import (
 )
 from .account_access import is_account_blocked, is_business_owner_account_blocked
 from .validators import validate_password_strength
+from project.turnstile import verify_turnstile
+
+TURNSTILE_FAILED_MESSAGE = 'セキュリティ確認に失敗しました。ページを再読み込みして再度お試しください。'
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -60,6 +63,14 @@ def send_login_code(request: Request) -> Response:
             return Response(
                 {'error': err_msg},
                 status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
+        # Turnstile（ボット対策）の検証
+        if not verify_turnstile(request.data.get('turnstile_token', ''), ip_address):
+            logger.warning(f"ログイン認証コード送信: Turnstile 検証失敗: ip={ip_address}")
+            return Response(
+                {'error': TURNSTILE_FAILED_MESSAGE},
+                status=status.HTTP_403_FORBIDDEN
             )
 
         email = request.data.get('email', '').strip().lower()
@@ -279,6 +290,15 @@ def logout_api(request: Request) -> Response:
 def request_password_reset(request: Request) -> Response:
     """パスワード再設定メール送信API"""
     try:
+        # Turnstile（ボット対策）の検証
+        ip_address = get_client_ip(request)
+        if not verify_turnstile(request.data.get('turnstile_token', ''), ip_address):
+            logger.warning(f"パスワード再設定リクエスト: Turnstile 検証失敗: ip={ip_address}")
+            return Response(
+                {'error': TURNSTILE_FAILED_MESSAGE},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         email = request.data.get('email', '').strip().lower()
 
         if not email:

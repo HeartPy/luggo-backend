@@ -17,6 +17,8 @@ import logging
 import time
 
 from project.utils import mask_sensitive_id
+from project.turnstile import verify_turnstile
+from users.utils import get_client_ip
 from business_owners.models import BusinessProfile
 from business_owners.stripe_info import sync_stripe_review_status
 from .models import BookingAuditLog, LuggageBooking, PendingBooking, ChargeDispute
@@ -1153,6 +1155,18 @@ def cancel_booking(request: Request, booking_id: UUID) -> Response:
 def create_payment_intent(request: Request) -> Response:
     """Stripe Payment Intentを作成"""
     try:
+        # Turnstile（ボット対策）の検証
+        client_ip = get_client_ip(request)
+        if not verify_turnstile(request.data.get('turnstile_token', ''), client_ip):
+            logger.warning("create_payment_intent: Turnstile 検証失敗: ip=%s", client_ip)
+            return Response(
+                {
+                    'err_code': 'turnstile_failed',
+                    'errMsg': 'セキュリティ確認に失敗しました。ページを再読み込みして再度お試しください。',
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         # Step2で選択された荷物情報と金額を取得（フロントエンドから送られてくる値をそのまま使用）
         luggage_items = request.data.get('luggage_items', {})
         total_amount = request.data.get('total_amount')
@@ -1160,7 +1174,7 @@ def create_payment_intent(request: Request) -> Response:
         if total_amount is None:
             logger.warning("create_payment_intent: total_amount is missing")
             return Response(
-                {'errMsg': '支払い情報の取得に失敗しました。'},
+                {'err_code': 'payment_info_failed', 'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1170,14 +1184,14 @@ def create_payment_intent(request: Request) -> Response:
         except (ValueError, TypeError):
             logger.warning("create_payment_intent: invalid total_amount format: %r", total_amount)
             return Response(
-                {'errMsg': '支払い情報の取得に失敗しました。'},
+                {'err_code': 'payment_info_failed', 'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         if amount_in_yen <= 0:
             logger.warning("create_payment_intent: non-positive total_amount: %s", amount_in_yen)
             return Response(
-                {'errMsg': '支払い情報の取得に失敗しました。'},
+                {'err_code': 'payment_info_failed', 'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1210,7 +1224,7 @@ def create_payment_intent(request: Request) -> Response:
         if total_items < 1:
             logger.warning("create_payment_intent: no luggage items selected")
             return Response(
-                {'errMsg': '支払い情報の取得に失敗しました。'},
+                {'err_code': 'payment_info_failed', 'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1223,7 +1237,7 @@ def create_payment_intent(request: Request) -> Response:
         if not business_owner_id:
             logger.warning("create_payment_intent: business_owner_id is missing")
             return Response(
-                {'errMsg': '支払い情報の取得に失敗しました。'},
+                {'err_code': 'payment_info_failed', 'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         try:
@@ -1234,13 +1248,16 @@ def create_payment_intent(request: Request) -> Response:
                 mask_sensitive_id(str(business_owner_id)),
             )
             return Response(
-                {'errMsg': '支払い情報の取得に失敗しました。'},
+                {'err_code': 'payment_info_failed', 'errMsg': '支払い情報の取得に失敗しました。'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         connected_account_id = (business_profile.stripe_account_id or '').strip()
         if not connected_account_id:
             return Response(
-                {'errMsg': 'この事業者はまだ決済の設定が完了していません。'},
+                {
+                    'err_code': 'payment_not_configured',
+                    'errMsg': 'この事業者はまだ決済の設定が完了していません。',
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1256,7 +1273,10 @@ def create_payment_intent(request: Request) -> Response:
                     str(e),
                 )
                 return Response(
-                    {'errMsg': 'この事業者はまだ決済の設定が完了していません。'},
+                    {
+                        'err_code': 'payment_not_configured',
+                        'errMsg': 'この事業者はまだ決済の設定が完了していません。',
+                    },
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
@@ -1271,7 +1291,10 @@ def create_payment_intent(request: Request) -> Response:
                     len(currently_due),
                 )
                 return Response(
-                    {'errMsg': 'この事業者はまだ決済の設定が完了していません。'},
+                    {
+                        'err_code': 'payment_not_configured',
+                        'errMsg': 'この事業者はまだ決済の設定が完了していません。',
+                    },
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
@@ -1279,7 +1302,10 @@ def create_payment_intent(request: Request) -> Response:
         service_areas = business_profile.service_areas or []
         if not service_areas:
             return Response(
-                {'errMsg': '集荷地域が設定されていないため予約できません。'},
+                {
+                    'err_code': 'pickup_area_not_configured',
+                    'errMsg': '集荷地域が設定されていないため予約できません。',
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1287,7 +1313,10 @@ def create_payment_intent(request: Request) -> Response:
         pickup_pref = pref_code_from_postal(pickup_postal_code)
         if not pickup_pref or pickup_pref not in service_areas:
             return Response(
-                {'errMsg': '集荷場所の郵便番号は集荷地域の対象外です。'},
+                {
+                    'err_code': 'pickup_postal_out_of_area',
+                    'errMsg': '集荷場所の郵便番号は集荷地域の対象外です。',
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1295,7 +1324,10 @@ def create_payment_intent(request: Request) -> Response:
         deliverable_prefectures = list(pricing_rules.keys())
         if not deliverable_prefectures:
             return Response(
-                {'errMsg': '配達地域が設定されていないため予約できません。'},
+                {
+                    'err_code': 'delivery_area_not_configured',
+                    'errMsg': '配達地域が設定されていないため予約できません。',
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1303,7 +1335,10 @@ def create_payment_intent(request: Request) -> Response:
         delivery_pref = pref_code_from_postal(delivery_postal_code)
         if not delivery_pref or delivery_pref not in deliverable_prefectures:
             return Response(
-                {'errMsg': '配達場所の郵便番号は配達地域の対象外です。'},
+                {
+                    'err_code': 'delivery_postal_out_of_area',
+                    'errMsg': '配達場所の郵便番号は配達地域の対象外です。',
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1312,7 +1347,10 @@ def create_payment_intent(request: Request) -> Response:
         nth_weekday_holidays = business_profile.nth_weekday_holidays or []
         temporary_closures = business_profile.temporary_closures or []
 
-        for field_name, label in [('pickup_date', '集荷日'), ('delivery_date', '配達日')]:
+        for field_name, label, date_field in [
+            ('pickup_date', '集荷日', 'pickup'),
+            ('delivery_date', '配達日', 'delivery'),
+        ]:
             raw_date = request.data.get(field_name, '')
             if not raw_date:
                 continue
@@ -1325,7 +1363,11 @@ def create_payment_intent(request: Request) -> Response:
             weekday_idx = target_date.weekday()
             if len(operating_days) == 7 and operating_days[weekday_idx] == '0':
                 return Response(
-                    {'errMsg': f'{label}に指定された日は定休日のため選択できません。'},
+                    {
+                        'err_code': 'regular_holiday',
+                        'err_params': {'date_field': date_field},
+                        'errMsg': f'{label}に指定された日は定休日のため選択できません。',
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -1333,13 +1375,21 @@ def create_payment_intent(request: Request) -> Response:
             nth_key = f'{nth}-{weekday_idx}'
             if nth_key in nth_weekday_holidays:
                 return Response(
-                    {'errMsg': f'{label}に指定された日は定休日のため選択できません。'},
+                    {
+                        'err_code': 'regular_holiday',
+                        'err_params': {'date_field': date_field},
+                        'errMsg': f'{label}に指定された日は定休日のため選択できません。',
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
             if target_date.isoformat() in temporary_closures:
                 return Response(
-                    {'errMsg': f'{label}に指定された日は臨時休業日のため選択できません。'},
+                    {
+                        'err_code': 'temporary_closure',
+                        'err_params': {'date_field': date_field},
+                        'errMsg': f'{label}に指定された日は臨時休業日のため選択できません。',
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -1349,7 +1399,10 @@ def create_payment_intent(request: Request) -> Response:
             pickup_date_raw = request.data.get('pickup_date', '')
             delivery_date_raw = request.data.get('delivery_date', '')
 
-            for raw_dt, label in [(pickup_date_raw, '集荷日'), (delivery_date_raw, '配達日')]:
+            for raw_dt, label, date_field in [
+                (pickup_date_raw, '集荷日', 'pickup'),
+                (delivery_date_raw, '配達日', 'delivery'),
+            ]:
                 if not raw_dt:
                     continue
 
@@ -1376,6 +1429,11 @@ def create_payment_intent(request: Request) -> Response:
                     remaining = max(0, daily_max - existing_total)
                     return Response(
                         {
+                            'err_code': 'daily_capacity_exceeded',
+                            'err_params': {
+                                'date_field': date_field,
+                                'remaining': remaining,
+                            },
                             'errMsg': (
                                 f'{label}の荷物受付可能数の残りは{remaining}個です。'
                                 f'予約個数を{remaining}個以下にしてください。'
@@ -1395,7 +1453,10 @@ def create_payment_intent(request: Request) -> Response:
 
         if server_total_amount <= 0:
             return Response(
-                {'errMsg': '料金が設定されていません。事業者にお問い合わせください。'},
+                {
+                    'err_code': 'price_not_configured',
+                    'errMsg': '料金が設定されていません。事業者にお問い合わせください。',
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1494,13 +1555,13 @@ def create_payment_intent(request: Request) -> Response:
     except stripe.error.StripeError as e:
         logger.warning("Stripe error in create_payment_intent: %s", str(e))
         return Response(
-            {'errMsg': '支払い情報の取得に失敗しました。'},
+            {'err_code': 'payment_info_failed', 'errMsg': '支払い情報の取得に失敗しました。'},
             status=status.HTTP_400_BAD_REQUEST
         )
     except Exception:
         logger.exception("Unexpected error in create_payment_intent")
         return Response(
-            {'errMsg': '支払い情報の取得に失敗しました。'},
+            {'err_code': 'payment_info_failed', 'errMsg': '支払い情報の取得に失敗しました。'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
