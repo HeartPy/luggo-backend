@@ -18,6 +18,8 @@ import io
 import logging
 from datetime import date as date_type
 from project.utils import mask_sensitive_id
+from project.turnstile import verify_turnstile
+from users.utils import get_client_ip
 
 from .models import BusinessProfile, RegistrationToken
 from .policy_versions import (
@@ -2538,6 +2540,15 @@ def check_email_availability(request: Request) -> Response:
 def request_registration_email(request: Request) -> Response:
     """登録用メール送信リクエストAPI"""
     try:
+        # Turnstile（ボット対策）の検証
+        ip_address = get_client_ip(request)
+        if not verify_turnstile(request.data.get('turnstile_token', ''), ip_address):
+            logger.warning(f"登録メール送信リクエスト: Turnstile 検証失敗: ip={ip_address}")
+            return Response(
+                {'error': 'セキュリティ確認に失敗しました。ページを再読み込みして再度お試しください。'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         serializer = RegistrationRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email'].lower()

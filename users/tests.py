@@ -135,6 +135,18 @@ class BusinessOwnerLoginFlowTests(TestCase):
         self.assertEqual(response.status_code, 401)
         send_code.assert_not_called()
 
+    def test_send_login_code_rejects_when_turnstile_fails(self) -> None:
+        # Arrange: Turnstile が「常に失敗」するテスト用 Secret に切り替える
+        with self.settings(
+            TURNSTILE_SECRET_KEY='2x0000000000000000000000000000000AA'
+        ):
+            # Act: 正しい認証情報で認証コード送信を要求する
+            response, send_code = self._send_code()
+
+        # Assert: 403 になりメールは送られない
+        self.assertEqual(response.status_code, 403)
+        send_code.assert_not_called()
+
     def test_send_login_code_rejects_non_owner_user(self) -> None:
         # Arrange: 配達者アカウントを用意する
         User.objects.create_user(
@@ -294,6 +306,30 @@ class DriverLoginTests(TestCase):
 
         # Assert: 401 になりセッションは作られない
         self.assertEqual(response.status_code, 401)
+        bookings_response = self.client.get(
+            reverse('driver_my_bookings'),
+            {'date': timezone.localdate().isoformat()},
+        )
+        self.assertNotEqual(bookings_response.status_code, 200)
+
+    def test_driver_login_rejects_when_turnstile_fails(self) -> None:
+        # Arrange: Turnstile が「常に失敗」するテスト用 Secret に切り替える
+        with self.settings(
+            TURNSTILE_SECRET_KEY='2x0000000000000000000000000000000AA'
+        ):
+            # Act: 正しい認証情報でログインを試す
+            response = self.client.post(
+                reverse('driver_login'),
+                {
+                    'email': 'login-driver@example.com',
+                    'password': self.password,
+                    'turnstile_token': 'any-token',
+                },
+                format='json',
+            )
+
+        # Assert: 403 になりセッションは作られない
+        self.assertEqual(response.status_code, 403)
         bookings_response = self.client.get(
             reverse('driver_my_bookings'),
             {'date': timezone.localdate().isoformat()},

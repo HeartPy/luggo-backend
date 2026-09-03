@@ -8,6 +8,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from project.turnstile import verify_turnstile
 from users.account_access import is_driver_account_blocked
 from users.utils import (
     check_ip_login_attempts,
@@ -32,6 +33,14 @@ def driver_login(request: Request) -> Response:
             return Response(
                 {'error': err_msg},
                 status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
+        # Turnstile（ボット対策）の検証
+        if not verify_turnstile(request.data.get('turnstile_token', ''), ip_address):
+            logger.warning(f"配達者ログイン: Turnstile 検証失敗: ip={ip_address}")
+            return Response(
+                {'error': 'セキュリティ確認に失敗しました。ページを再読み込みして再度お試しください。'},
+                status=status.HTTP_403_FORBIDDEN
             )
 
         email = request.data.get('email', '').strip().lower()

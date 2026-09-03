@@ -226,6 +226,9 @@ PLATFORM_INVOICE_SEAL_PATH = config(
 # フロントエンドのベースURL
 FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='http://localhost:3000')
 
+# Cloudflare Turnstile設定
+TURNSTILE_SECRET_KEY = config('TURNSTILE_SECRET_KEY', default='')
+
 # Google Places API設定
 GOOGLE_PLACES_API_KEY = config('GOOGLE_PLACES_API_KEY', default='')
 # Google Geocoding API設定
