@@ -1,4 +1,4 @@
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.request import Request
@@ -25,6 +25,11 @@ from .utils import (
 )
 from .account_access import is_account_blocked, is_business_owner_account_blocked
 from .validators import validate_password_strength
+from project.throttling import (
+    EmailSendRateThrottle,
+    LoginRateThrottle,
+    PublicReadRateThrottle,
+)
 from project.turnstile import verify_turnstile
 
 TURNSTILE_FAILED_MESSAGE = 'セキュリティ確認に失敗しました。ページを再読み込みして再度お試しください。'
@@ -52,6 +57,7 @@ def check_authentication(request: Request) -> Response:
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([LoginRateThrottle])
 def send_login_code(request: Request) -> Response:
     """ログイン認証コード送信API"""
     try:
@@ -137,6 +143,7 @@ def send_login_code(request: Request) -> Response:
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([LoginRateThrottle])
 def verify_login_code_api(request: Request) -> Response:
     """認証コード検証・ログインAPI"""
     try:
@@ -287,6 +294,7 @@ def logout_api(request: Request) -> Response:
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([EmailSendRateThrottle])
 def request_password_reset(request: Request) -> Response:
     """パスワード再設定メール送信API"""
     try:
@@ -336,6 +344,7 @@ def request_password_reset(request: Request) -> Response:
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
+@throttle_classes([PublicReadRateThrottle])
 def verify_password_reset_token_api(request: Request) -> Response:
     """パスワード再設定トークン検証API"""
     try:

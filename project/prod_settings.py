@@ -1,3 +1,5 @@
+import os
+
 from .settings import *
 from .tenant_origins import TENANT_SUBDOMAIN_ORIGIN_REGEX
 
@@ -22,6 +24,30 @@ CSRF_TRUSTED_ORIGINS = [
     *CSRF_TRUSTED_ORIGINS,
     "https://*.luggo.delivery",
 ]
+
+# メディアは S3（バケットは ACL 無効想定）。認証は ECS タスクロールを優先し、
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY は通常不要。
+AWS_STORAGE_BUCKET_NAME = os.environ.get(
+    'AWS_STORAGE_BUCKET_NAME',
+    config('AWS_STORAGE_BUCKET_NAME', default='luggo-storage'),
+)
+AWS_S3_REGION_NAME = os.environ.get(
+    'AWS_S3_REGION_NAME',
+    config('AWS_S3_REGION_NAME', default='ap-northeast-3'),
+)
+AWS_S3_SIGNATURE_VERSION = 's3v4'
+AWS_DEFAULT_ACL = None
+AWS_QUERYSTRING_AUTH = True
+AWS_S3_FILE_OVERWRITE = False
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
+    },
+}
 
 # Sentry（エラー監視）
 # SENTRY_DSN が設定されているときだけ有効化する。

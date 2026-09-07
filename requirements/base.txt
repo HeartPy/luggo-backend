@@ -6,9 +6,10 @@ python-decouple==3.8
 dj-database-url==2.1.*
 psycopg2-binary==2.9.*
 gunicorn==21.2.*
+whitenoise==6.6.*
 Pillow==10.1.*
 requests==2.32.*
-stripe==9.*
+stripe==15.*
 reportlab==4.*
 celery==5.6.*
 redis==8.*

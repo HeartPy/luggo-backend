@@ -2,7 +2,6 @@
 -r base.txt
 
 # 開発環境専用パッケージ
-whitenoise==6.6.*
 django-debug-toolbar==4.2.*
 django-extensions==3.2.*
 ipython==8.18.*

@@ -1,7 +1,8 @@
 """
-このファイルは開発環境用の設定です。
-本番環境では project.prod_settings が使用されます。
-project.prod_settings はこのファイルの設定を継承し、本番用設定で上書きします。
+開発環境用の設定
+
+本番環境では project.prod_settings が使用される。
+project.prod_settings はこのファイルの設定を継承し、本番用設定で上書きする。
 """
 
 from pathlib import Path
@@ -18,6 +19,9 @@ SECRET_KEY = config('SECRET_KEY')
 DEBUG = True
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=lambda value: [item.strip() for item in value.split(',')])
+
+# 運営 Django Admin の URL パス（先頭・末尾の / なし）。本番では推測されにくい値にする
+DJANGO_ADMIN_PATH = config('DJANGO_ADMIN_PATH', default='admin').strip().strip('/')
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -37,8 +41,11 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # ALB ヘルスは Host=プライベート IP のため、ALLOWED_HOSTS 検証より前に応答する
+    "project.middleware.HealthCheckMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -140,16 +147,28 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.JSONParser',
         'rest_framework.parsers.MultiPartParser',
     ],
+    # 公開 API の IP 単位レート制限（project/throttling.py のスコープ別クラスで使用）
+    'DEFAULT_THROTTLE_RATES': {
+        'login': config('THROTTLE_LOGIN_RATE', default='10/min'),
+        'email-send': config('THROTTLE_EMAIL_SEND_RATE', default='20/hour'),
+        'public-read': config('THROTTLE_PUBLIC_READ_RATE', default='30/min'),
+        'payment': config('THROTTLE_PAYMENT_RATE', default='20/min'),
+    },
 }
 
+# レート制限の有効/無効
+# 開発・ユニットテスト・E2E ではデフォルト無効（THROTTLE_ENABLED=True で強制有効化できる）
+THROTTLE_ENABLED = config('THROTTLE_ENABLED', default=not DEBUG, cast=bool)
+
 # メール送信設定
-EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
-EMAIL_HOST = config('EMAIL_HOST', default='')
-EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+# 本番は RESEND_API_KEY 経由。未設定時（開発）は console に出力。
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@luggo.delivery')
+# From の表示名（運営として送るメール）
+PLATFORM_FROM_DISPLAY_NAME = config(
+    'PLATFORM_FROM_DISPLAY_NAME',
+    default='LugGo(ラグゴー)',
+)
 
 # ファイルアップロード設定
 LUGGO_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -185,7 +204,11 @@ E2E_LOGIN_CODE = '000000'
 
 # Stripe設定
 STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY', default='')
+# 親アカウント用 Webhook Signing secret
 STRIPE_WEBHOOK_SECRET = config('STRIPE_WEBHOOK_SECRET', default='')
+# 連結アカウント用 Webhook Signing secret
+# 未設定なら STRIPE_WEBHOOK_SECRET のみ。開発環境では通常不要。
+STRIPE_CONNECT_WEBHOOK_SECRET = config('STRIPE_CONNECT_WEBHOOK_SECRET', default='')
 
 # Stripe Webhook 設定
 STRIPE_WEBHOOK_BOOKING_GRACE_SECONDS = config(
@@ -194,7 +217,6 @@ STRIPE_WEBHOOK_BOOKING_GRACE_SECONDS = config(
 
 # Resend 設定
 RESEND_API_KEY = config('RESEND_API_KEY', default='')
-RESEND_FROM_EMAIL = config('RESEND_FROM_EMAIL', default=DEFAULT_FROM_EMAIL)
 
 # 運営への通知先メールアドレス（カンマ区切りで複数指定可）
 OPERATIONS_NOTIFICATION_EMAIL = config(
@@ -218,10 +240,17 @@ PLATFORM_INVOICE_REGISTRATION_NUMBER = config(
 )
 PLATFORM_INVOICE_SEAL_PATH = config(
     'PLATFORM_INVOICE_SEAL_PATH',
-    default=str(
-        BASE_DIR / 'business_owners' / 'assets' / 'platform_seal.png'
-    ),
+    default='',
 )
+if PLATFORM_INVOICE_SEAL_PATH:
+    _seal_path = Path(PLATFORM_INVOICE_SEAL_PATH)
+    PLATFORM_INVOICE_SEAL_PATH = str(
+        _seal_path if _seal_path.is_absolute() else BASE_DIR / _seal_path
+    )
+else:
+    PLATFORM_INVOICE_SEAL_PATH = str(
+        BASE_DIR / 'business_owners' / 'assets' / 'platform_seal.png'
+    )
 
 # フロントエンドのベースURL
 FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='http://localhost:3000')

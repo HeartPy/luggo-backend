@@ -6,11 +6,10 @@
 
 送信経路は RESEND_API_KEY の有無で自動的に切り替える:
   - RESEND_API_KEY あり : Resend（https://resend.com/）の HTTP API を利用（本番想定）
-  - RESEND_API_KEY なし : Django の EMAIL_BACKEND（send_mail）を利用（開発想定。
-    既定は console バックエンドで標準出力に表示される）
+  - RESEND_API_KEY なし : Django の console EmailBackend（開発想定。標準出力に表示）
 
 これにより、認証・登録・予約確認・運営アラートなど全てのメールが、
-本番では Resend、開発では EMAIL_BACKEND を通る。
+本番では Resend、開発ではコンソール出力を通る。
 """
 
 import base64
@@ -18,7 +17,7 @@ import logging
 from typing import Optional
 import requests
 from django.conf import settings
-from django.core.mail import EmailMultiAlternatives, send_mail
+from django.core.mail import EmailMultiAlternatives
 
 
 logger = logging.getLogger(__name__)
@@ -55,13 +54,27 @@ def _resend_enabled() -> bool:
     return bool(getattr(settings, "RESEND_API_KEY", "") or "")
 
 
+def format_from_header(display_name: str, address: str) -> str:
+    """表示名付きの From ヘッダを組み立てる。表示名が空ならアドレスのみ。"""
+    addr = (address or "").strip()
+    name = (display_name or "").strip()
+    if not name:
+        return addr
+    if any(ch in name for ch in '()<>@,;:\\".[]'):
+        escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}" <{addr}>'
+    return f"{name} <{addr}>"
+
+
+def platform_from_header() -> str:
+    """運営として送るときの From（表示名 + DEFAULT_FROM_EMAIL）"""
+    display = getattr(settings, "PLATFORM_FROM_DISPLAY_NAME", "") or "LugGo(ラグゴー)"
+    return format_from_header(display, settings.DEFAULT_FROM_EMAIL)
+
+
 def _resolve_sender(from_email: Optional[str]) -> str:
-    """送信元アドレスを決定"""
-    return (
-        from_email
-        or getattr(settings, "RESEND_FROM_EMAIL", "")
-        or settings.DEFAULT_FROM_EMAIL
-    )
+    """送信元を決定。未指定なら運営の表示名付き From。"""
+    return from_email or platform_from_header()
 
 
 def _normalize_recipients(to: str | list[str]) -> list[str]:
@@ -77,13 +90,15 @@ def send_email(
     to: str | list[str],
     html: Optional[str] = None,
     from_email: Optional[str] = None,
+    reply_to: Optional[str | list[str]] = None,
     attachments: Optional[list[tuple[str, bytes, str]]] = None,
 ) -> bool:
     """
     メールを送信する。送信に成功したら True を返す。
 
     RESEND_API_KEY が設定されていれば Resend、なければ Django の
-    EMAIL_BACKENDを使って送信。
+    console EmailBackend で出力。
+    from_email 未指定時は運営の表示名付きアドレスを使う。
     """
     recipients = _normalize_recipients(to)
     if not recipients:
@@ -94,6 +109,7 @@ def send_email(
         return False
 
     sender = _resolve_sender(from_email)
+    reply_to_list = _normalize_recipients(reply_to) if reply_to else []
 
     if _resend_enabled():
         return _send_via_resend(
@@ -102,6 +118,7 @@ def send_email(
             html=html,
             sender=sender,
             recipients=recipients,
+            reply_to=reply_to_list,
             attachments=attachments or [],
         )
 
@@ -111,6 +128,7 @@ def send_email(
         html=html,
         sender=sender,
         recipients=recipients,
+        reply_to=reply_to_list,
         attachments=attachments or [],
     )
 
@@ -122,6 +140,7 @@ def _send_via_resend(
     html: Optional[str],
     sender: str,
     recipients: list[str],
+    reply_to: list[str],
     attachments: list[tuple[str, bytes, str]],
 ) -> bool:
     """Resend の HTTP API でメールを送信"""
@@ -133,6 +152,8 @@ def _send_via_resend(
         "subject": subject,
         "text": text,
     }
+    if reply_to:
+        payload["reply_to"] = reply_to
     if html:
         payload["html"] = html
     if attachments:
@@ -179,34 +200,26 @@ def _send_via_django(
     html: Optional[str],
     sender: str,
     recipients: list[str],
+    reply_to: list[str],
     attachments: list[tuple[str, bytes, str]],
 ) -> bool:
-    """Django の EMAIL_BACKEND（開発時は console など）でメールを送信"""
+    """Django の mail（開発時は console）でメールを送信"""
     try:
-        if attachments:
-            message = EmailMultiAlternatives(
-                subject=subject,
-                body=text,
-                from_email=sender,
-                to=recipients,
-            )
-            if html:
-                message.attach_alternative(html, "text/html")
-            for filename, content, content_type in attachments:
-                message.attach(filename, content, content_type)
-            message.send(fail_silently=False)
-        else:
-            send_mail(
-                subject=subject,
-                message=text,
-                from_email=sender,
-                recipient_list=recipients,
-                html_message=html,
-                fail_silently=False,
-            )
+        message = EmailMultiAlternatives(
+            subject=subject,
+            body=text,
+            from_email=sender,
+            to=recipients,
+            reply_to=reply_to or None,
+        )
+        if html:
+            message.attach_alternative(html, "text/html")
+        for filename, content, content_type in attachments:
+            message.attach(filename, content, content_type)
+        message.send(fail_silently=False)
     except Exception as e:
         logger.error(
-            "メール送信に失敗しました（EMAIL_BACKEND）: subject=%s, error=%s",
+            "メール送信に失敗しました（console）: subject=%s, error=%s",
             subject,
             str(e),
             exc_info=True,
@@ -214,7 +227,7 @@ def _send_via_django(
         return False
 
     logger.info(
-        "メール送信に成功しました（EMAIL_BACKEND）: subject=%s, recipients=%d",
+        "メール送信に成功しました（console）: subject=%s, recipients=%d",
         subject,
         len(recipients),
     )

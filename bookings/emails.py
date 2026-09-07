@@ -3,7 +3,7 @@
 
 「何を・誰に送るか」をここに集約し、件名・本文は Django テンプレート
 （bookings/templates/bookings/emails/）に切り出す。実際の配信は
-project.email.send_email に委譲（Resend / EMAIL_BACKEND を自動切替）。
+project.email.send_email に委譲（Resend / console を自動切替）。
 
 新しいメール種別を追加する場合は、
   1. templates/bookings/emails/<name>_subject.txt / <name>.txt /（任意で）<name>.html を追加
@@ -14,6 +14,7 @@ project.email.send_email に委譲（Resend / EMAIL_BACKEND を自動切替）�
 import logging
 from datetime import date as date_type
 from typing import Any, Optional
+from django.conf import settings
 from django.template import TemplateDoesNotExist
 from django.template.loader import render_to_string
 
@@ -23,7 +24,11 @@ from business_owners.stripe_info import (
     format_phone_for_display,
     get_business_stripe_info,
 )
-from project.email import operations_recipients, send_email
+from project.email import (
+    format_from_header,
+    operations_recipients,
+    send_email,
+)
 from project.utils import mask_sensitive_id
 from .models import LuggageBooking
 
@@ -264,6 +269,19 @@ def _booking_context(
     return context
 
 
+def _traveler_from_and_reply_to(
+    booking: LuggageBooking, lang: str
+) -> tuple[str, Optional[str]]:
+    """旅行者向けメールの表示名（事業者）と Reply-To（事業者メール）"""
+    signature = _business_signature(booking.business_owner, lang)
+    display = (signature.get("business_name") or "").strip() or (
+        getattr(settings, "PLATFORM_FROM_DISPLAY_NAME", "") or "LugGo(ラグゴー)"
+    )
+    reply_to = (signature.get("business_email") or "").strip() or None
+    from_header = format_from_header(display, settings.DEFAULT_FROM_EMAIL)
+    return from_header, reply_to
+
+
 def send_booking_confirmation_email(booking: LuggageBooking) -> bool:
     """
     予約確定時に顧客へ予約確認メールを送信。送信成功で True。
@@ -287,11 +305,14 @@ def send_booking_confirmation_email(booking: LuggageBooking) -> bool:
         )
         return False
 
+    from_header, reply_to = _traveler_from_and_reply_to(booking, lang)
     return send_email(
         subject=subject,
         text=text,
         to=booking.customer_email,
         html=html,
+        from_email=from_header,
+        reply_to=reply_to,
     )
 
 
@@ -351,11 +372,14 @@ def send_booking_cancellation_email_to_customer(
         )
         return False
 
+    from_header, reply_to = _traveler_from_and_reply_to(booking, lang)
     return send_email(
         subject=subject,
         text=text,
         to=booking.customer_email,
         html=html,
+        from_email=from_header,
+        reply_to=reply_to,
     )
 
 

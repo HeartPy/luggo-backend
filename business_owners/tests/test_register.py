@@ -100,8 +100,9 @@ class BusinessRegistrationFlowTests(TestCase):
         self.assertTrue(verify_response.data['valid'])
         self.assertEqual(verify_response.data['email'], self.EMAIL)
 
-        # Act: アカウント登録を実行する（完了通知メールはモック）
-        with patch('business_owners.views.send_registration_completed_emails'):
+        # Act: アカウント登録を実行する（完了通知メールとドメイン登録タスクはモック）
+        with patch('business_owners.views.send_registration_completed_emails'), \
+                patch('business_owners.views.register_payment_method_domain.delay'):
             register_response = self.client.post(
                 reverse('register_business_account'),
                 self._register_payload(token.token),

@@ -176,10 +176,16 @@ def verify_password_reset_token(token: str) -> Optional[PasswordResetToken]:
 
 
 def get_client_ip(request) -> str:
-    """クライアントのIPアドレスを取得"""
+    """
+    クライアントのIPアドレスを取得
+
+    ALB は実クライアント IP を X-Forwarded-For の末尾に追記する。
+    先頭はクライアントが偽ヘッダで自由に設定できるため、末尾を採用する
+    （IP ログインブロック・Turnstile remoteip・レート制限で共通に使う）。
+    """
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
     if x_forwarded_for:
-        ip = x_forwarded_for.split(',')[0]
+        ip = x_forwarded_for.split(',')[-1]
     else:
         ip = request.META.get('REMOTE_ADDR', '')
     return ip.strip()

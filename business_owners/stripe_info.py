@@ -17,6 +17,8 @@ from typing import Any, Optional, TYPE_CHECKING
 import stripe
 from django.utils import timezone
 
+from project.utils import as_stripe_dict, stripe_get
+
 if TYPE_CHECKING:
     from .models import BusinessProfile
 
@@ -103,27 +105,31 @@ def _extract_from_account(
 ) -> dict[str, str]:
     """Stripe Account（＋必要なら Persons）から表示用情報を抽出"""
     info = _empty_info()
+    account = as_stripe_dict(account) or {}
 
-    business_profile = account.get("business_profile") or {}
-    info["support_email"] = business_profile.get("support_email") or ""
+    business_profile = stripe_get(account, "business_profile") or {}
+    info["support_email"] = stripe_get(business_profile, "support_email") or ""
 
-    support_phone = business_profile.get("support_phone")
+    support_phone = stripe_get(business_profile, "support_phone")
     if support_phone:
         info["support_phone"] = format_phone_for_display(support_phone)
 
-    business_type = account.get("business_type", "")
+    business_type = stripe_get(account, "business_type", "")
     if business_type == "company":
-        company = account.get("company") or {}
-        info["company_name_en"] = (company.get("name") or "").strip()
-        addr = company.get("address_kanji") or {}
+        company = stripe_get(account, "company") or {}
+        info["company_name_en"] = (stripe_get(company, "name") or "").strip()
+        addr = stripe_get(company, "address_kanji") or {}
     else:
-        addr = (account.get("individual") or {}).get("address_kanji") or {}
-    info["business_address"] = format_address_kanji(addr)
+        individual = stripe_get(account, "individual") or {}
+        addr = stripe_get(individual, "address_kanji") or {}
+    info["business_address"] = format_address_kanji(
+        as_stripe_dict(addr) if not isinstance(addr, dict) else addr
+    )
 
     if business_type == "company":
-        account_phone = (account.get("company") or {}).get("phone")
+        account_phone = stripe_get(stripe_get(account, "company") or {}, "phone")
     else:
-        account_phone = (account.get("individual") or {}).get("phone")
+        account_phone = stripe_get(stripe_get(account, "individual") or {}, "phone")
     if account_phone:
         info["account_phone"] = format_phone_for_display(account_phone)
 
@@ -132,17 +138,19 @@ def _extract_from_account(
             try:
                 persons = stripe.Account.list_persons(account_id, limit=100)
                 for person in persons.data:
-                    if person.relationship and person.relationship.get("representative"):
-                        last = person.get("last_name_kanji") or ""
-                        first = person.get("first_name_kanji") or ""
+                    person_data = as_stripe_dict(person) or {}
+                    relationship = stripe_get(person_data, "relationship") or {}
+                    if stripe_get(relationship, "representative"):
+                        last = stripe_get(person_data, "last_name_kanji") or ""
+                        first = stripe_get(person_data, "first_name_kanji") or ""
                         info["representative_name"] = f"{last} {first}".strip()
                         break
             except stripe.error.StripeError:  # type: ignore[attr-defined]
                 logger.warning("代表者名の取得に失敗しました: account_id=%s", account_id)
         else:
-            individual = account.get("individual") or {}
-            last = individual.get("last_name_kanji") or ""
-            first = individual.get("first_name_kanji") or ""
+            individual = stripe_get(account, "individual") or {}
+            last = stripe_get(individual, "last_name_kanji") or ""
+            first = stripe_get(individual, "first_name_kanji") or ""
             info["representative_name"] = f"{last} {first}".strip()
 
     return info
@@ -187,21 +195,14 @@ def derive_stripe_review_status(account: Any) -> str:
     # 循環参照を避けるため関数内で import する
     from .models import StripeReviewStatus
 
-    def _get(obj: Any, key: str, default: Any = None) -> Any:
-        if obj is None:
-            return default
-        if hasattr(obj, "get"):
-            return obj.get(key, default)
-        return getattr(obj, key, default)
+    details_submitted = bool(stripe_get(account, "details_submitted", False))
+    charges_enabled = bool(stripe_get(account, "charges_enabled", False))
+    payouts_enabled = bool(stripe_get(account, "payouts_enabled", False))
 
-    details_submitted = bool(_get(account, "details_submitted", False))
-    charges_enabled = bool(_get(account, "charges_enabled", False))
-    payouts_enabled = bool(_get(account, "payouts_enabled", False))
-
-    requirements = _get(account, "requirements") or {}
-    currently_due = list(_get(requirements, "currently_due", []) or [])
-    past_due = list(_get(requirements, "past_due", []) or [])
-    disabled_reason = _get(requirements, "disabled_reason") or ""
+    requirements = stripe_get(account, "requirements") or {}
+    currently_due = list(stripe_get(requirements, "currently_due", []) or [])
+    past_due = list(stripe_get(requirements, "past_due", []) or [])
+    disabled_reason = stripe_get(requirements, "disabled_reason") or ""
 
     # Stripe に却下された（不正・利用規約違反など）場合は最優先で利用不可扱い
     if isinstance(disabled_reason, str) and disabled_reason.startswith("rejected"):
@@ -225,15 +226,10 @@ def derive_stripe_review_status(account: Any) -> str:
 
 def _requirements_due_list(account: Any) -> list[str]:
     """requirements.currently_due と past_due を結合した重複がないリストを返す"""
-    requirements = account.get("requirements") if hasattr(account, "get") else getattr(
-        account, "requirements", None
-    )
-    requirements = requirements or {}
+    requirements = stripe_get(account, "requirements") or {}
 
     def _due(key: str) -> list[str]:
-        if hasattr(requirements, "get"):
-            return list(requirements.get(key, []) or [])
-        return list(getattr(requirements, key, []) or [])
+        return list(stripe_get(requirements, key, []) or [])
 
     combined = _due("currently_due") + _due("past_due")
     # 順序を保ちつつ重複を除去
@@ -263,21 +259,12 @@ def sync_stripe_review_status(
     old_status = profile.stripe_review_status or StripeReviewStatus.UNKNOWN
 
     disabled_reason = ""
-    requirements = account.get("requirements") if hasattr(account, "get") else getattr(
-        account, "requirements", None
-    )
+    requirements = stripe_get(account, "requirements") or {}
     if requirements:
-        raw_reason = (
-            requirements.get("disabled_reason")
-            if hasattr(requirements, "get")
-            else getattr(requirements, "disabled_reason", None)
-        )
-        disabled_reason = raw_reason or ""
+        disabled_reason = stripe_get(requirements, "disabled_reason") or ""
 
     def _flag(key: str) -> bool:
-        if hasattr(account, "get"):
-            return bool(account.get(key, False))
-        return bool(getattr(account, key, False))
+        return bool(stripe_get(account, key, False))
 
     profile.stripe_review_status = new_status
     profile.stripe_charges_enabled = _flag("charges_enabled")

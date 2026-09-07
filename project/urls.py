@@ -4,8 +4,11 @@ from django.conf import settings
 from django.conf.urls.static import static
 
 
+# Admin は DJANGO_ADMIN_PATH で変更可能
+_admin_path = f"{settings.DJANGO_ADMIN_PATH}/"
+
 urlpatterns: list[URLPattern | URLResolver] = [
-    path("admin/", admin.site.urls),
+    path(_admin_path, admin.site.urls),
     path("api/common/", include('project.urls_common')),
     path("api/users/", include('users.urls')),
     path("api/bookings/", include('bookings.urls')),

@@ -1,4 +1,4 @@
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.request import Request
@@ -17,7 +17,12 @@ import re
 import io
 import logging
 from datetime import date as date_type
-from project.utils import mask_sensitive_id
+from project.utils import mask_sensitive_id, stripe_get
+from project.throttling import (
+    EmailSendRateThrottle,
+    LoginRateThrottle,
+    PublicReadRateThrottle,
+)
 from project.turnstile import verify_turnstile
 from users.utils import get_client_ip
 
@@ -33,6 +38,7 @@ from .serializers import (
     BusinessAccountRegistrationSerializer,
     RegistrationRequestSerializer,
 )
+from .tasks import register_payment_method_domain
 from .utils import (
     generate_registration_token,
     send_registration_email,
@@ -1395,8 +1401,8 @@ def custom_update_account(request: Request) -> Response:
         # 本人確認書類の再送信が必要かどうかを確認
         # requirements.currently_dueまたはpast_dueにverification.document関連の要件が含まれている場合、再送信可能
         requirements = getattr(account, 'requirements', None)
-        currently_due = requirements.get('currently_due', []) if requirements else []
-        past_due = requirements.get('past_due', []) if requirements else []
+        currently_due = list(stripe_get(requirements, 'currently_due', []) or []) if requirements else []
+        past_due = list(stripe_get(requirements, 'past_due', []) or []) if requirements else []
         all_due = currently_due + past_due
 
         # verification.document関連の要件が含まれているか確認
@@ -2537,6 +2543,7 @@ def check_email_availability(request: Request) -> Response:
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([EmailSendRateThrottle])
 def request_registration_email(request: Request) -> Response:
     """登録用メール送信リクエストAPI"""
     try:
@@ -2596,6 +2603,7 @@ def request_registration_email(request: Request) -> Response:
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@throttle_classes([PublicReadRateThrottle])
 def verify_registration_token_api(request: Request) -> Response:
     """登録トークンの検証API"""
     try:
@@ -2632,6 +2640,7 @@ def verify_registration_token_api(request: Request) -> Response:
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([LoginRateThrottle])
 def register_business_account(request: Request) -> Response:
     """事業者アカウント登録API（トークン必須）"""
     try:
@@ -2708,6 +2717,17 @@ def register_business_account(request: Request) -> Response:
             logger.error(
                 f"事業者登録完了メールの送信に失敗しました: "
                 f"user_id={mask_sensitive_id(user.id)}, error={str(e)}",
+                exc_info=True,
+            )
+
+        # サブドメイン確定に伴い Stripe Payment Method Domain（Apple Pay 用）を非同期登録
+        # enqueue 失敗（Redis 障害等）が登録自体の成功を妨げないよう、例外は握りつぶす
+        try:
+            register_payment_method_domain.delay(profile.subdomain)
+        except Exception as e:
+            logger.error(
+                f"Payment Method Domain 登録タスクの投入に失敗しました: "
+                f"subdomain={profile.subdomain}, error={str(e)}",
                 exc_info=True,
             )
 
