@@ -3,11 +3,12 @@ import logging
 from django.conf import settings
 from django.contrib.auth import authenticate, login
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from project.throttling import LoginRateThrottle
 from project.turnstile import verify_turnstile
 from users.account_access import is_driver_account_blocked
 from users.utils import (
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([LoginRateThrottle])
 def driver_login(request: Request) -> Response:
     """配達者専用ログインAPI（二段階認証なし）"""
     try:

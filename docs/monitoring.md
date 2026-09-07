@@ -55,7 +55,7 @@
 
 ## ヘルスチェック API
 
-- URL: `GET /api/common/health`（認証・CSRF 不要）
-- DB へ `SELECT 1` を発行し、成功なら `200 {"status": "ok"}`、失敗なら `503 {"status": "error"}`
+- URL: `GET` / `HEAD` `/api/common/health`（認証・CSRF 不要。HEAD は UptimeRobot 無料枠向け）
+- DB へ `SELECT 1` を発行し、成功なら `200`（GET 時は `{"status": "ok"}`）、失敗なら `503`
 - Redis の疎通は含めない（Redis 停止でサイト全体を「down」と誤報しないため）
 - 実装: `project/views.py` の `health` / テスト: `project/tests.py`

@@ -19,7 +19,7 @@ from typing import Any, Optional
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from project.utils import mask_sensitive_id
+from project.utils import mask_sensitive_id, stripe_get
 from .models import BookingAuditLog, LuggageBooking, StripeWebhookEvent
 
 
@@ -269,9 +269,7 @@ def record_api_refund_result(
         return
 
     def _field(key: str) -> Any:
-        if hasattr(refund, 'get'):
-            return refund.get(key)
-        return getattr(refund, key, None)
+        return stripe_get(refund, key)
 
     refund_id = _field('id') or ''
     charge_id = _field('charge') or ''

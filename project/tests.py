@@ -3,11 +3,18 @@ import re
 from unittest.mock import MagicMock, patch
 
 import requests
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.core.cache import cache
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 from project.tenant_origins import TENANT_SUBDOMAIN_ORIGIN_REGEX
+from project.throttling import (
+    LoginRateThrottle,
+    PublicReadRateThrottle,
+    ScopedIPRateThrottle,
+)
 from project.turnstile import verify_turnstile
+from users.utils import get_client_ip
 
 
 class TenantSubdomainOriginRegexTests(SimpleTestCase):
@@ -114,6 +121,117 @@ class VerifyTurnstileTests(SimpleTestCase):
         self.assertFalse(result)
 
 
+class GetClientIpTests(SimpleTestCase):
+    """クライアント IP の取得（X-Forwarded-For は末尾を採用）"""
+
+    def setUp(self) -> None:
+        self.factory = RequestFactory()
+
+    def test_uses_remote_addr_without_xff(self) -> None:
+        # Act: X-Forwarded-For なしのリクエスト
+        request = self.factory.get('/', REMOTE_ADDR='192.0.2.10')
+
+        # Assert: REMOTE_ADDR が返る
+        self.assertEqual(get_client_ip(request), '192.0.2.10')
+
+    def test_uses_single_xff_value(self) -> None:
+        # Act: ALB が付与した X-Forwarded-For が 1 件
+        request = self.factory.get('/', HTTP_X_FORWARDED_FOR='203.0.113.5')
+
+        # Assert: その値が返る
+        self.assertEqual(get_client_ip(request), '203.0.113.5')
+
+    def test_ignores_spoofed_first_xff_entry(self) -> None:
+        # Arrange: クライアントが偽の XFF を付け、ALB が実 IP を末尾に追記した状態
+        request = self.factory.get(
+            '/',
+            HTTP_X_FORWARDED_FOR='1.2.3.4, 203.0.113.5',
+        )
+
+        # Assert: 偽装可能な先頭ではなく、ALB が追記した末尾を採用する
+        self.assertEqual(get_client_ip(request), '203.0.113.5')
+
+
+def _low_throttle_rates():
+    """
+    throttle テスト用にレートを下げる。
+
+    DRF の THROTTLE_RATES は import 時に settings のレート dict を参照する
+    クラス属性のため、override_settings(REST_FRAMEWORK=...) では変わらない。
+    patch.dict で dict の中身を直接差し替える（終了時に自動復元される）。
+    """
+    return patch.dict(
+        ScopedIPRateThrottle.THROTTLE_RATES,
+        {
+            'login': '2/min',
+            'email-send': '2/min',
+            'public-read': '2/min',
+            'payment': '2/min',
+        },
+    )
+
+
+class ThrottleTests(TestCase):
+    """公開 API の IP 単位レート制限"""
+
+    def setUp(self) -> None:
+        cache.clear()
+        self.factory = RequestFactory()
+
+    def tearDown(self) -> None:
+        cache.clear()
+
+    @override_settings(THROTTLE_ENABLED=True)
+    def test_exceeding_rate_returns_429(self) -> None:
+        with _low_throttle_rates():
+            # Act: レート上限（2/min）まではアクセスできる
+            url = reverse('verify_password_reset_token')
+            for _ in range(2):
+                response = self.client.get(url)
+                self.assertNotEqual(response.status_code, 429)
+
+            # Act: 上限超過
+            response = self.client.get(url)
+
+            # Assert: 429 が返る
+            self.assertEqual(response.status_code, 429)
+
+    def test_disabled_by_default_never_throttles(self) -> None:
+        with _low_throttle_rates():
+            # Act: THROTTLE_ENABLED がデフォルト（無効）のまま上限を超えてアクセス
+            url = reverse('verify_password_reset_token')
+            for _ in range(5):
+                response = self.client.get(url)
+
+                # Assert: 429 にならない
+                self.assertNotEqual(response.status_code, 429)
+
+    @override_settings(THROTTLE_ENABLED=True)
+    def test_scopes_have_independent_counters(self) -> None:
+        with _low_throttle_rates():
+            # Arrange: login スコープの上限を使い切る
+            request = self.factory.get('/', REMOTE_ADDR='192.0.2.10')
+            self.assertTrue(LoginRateThrottle().allow_request(request, None))
+            self.assertTrue(LoginRateThrottle().allow_request(request, None))
+            self.assertFalse(LoginRateThrottle().allow_request(request, None))
+
+            # Assert: 別スコープ（public-read）は影響を受けない
+            self.assertTrue(PublicReadRateThrottle().allow_request(request, None))
+
+    @override_settings(THROTTLE_ENABLED=True)
+    def test_different_ips_have_independent_counters(self) -> None:
+        with _low_throttle_rates():
+            # Arrange: IP その1 が上限を使い切る
+            request_a = self.factory.get('/', REMOTE_ADDR='192.0.2.10')
+            self.assertTrue(LoginRateThrottle().allow_request(request_a, None))
+            self.assertTrue(LoginRateThrottle().allow_request(request_a, None))
+            self.assertFalse(LoginRateThrottle().allow_request(request_a, None))
+
+            # Assert: 別 IP は制限されない
+            request_b = self.factory.get('/', REMOTE_ADDR='198.51.100.20')
+            self.assertTrue(LoginRateThrottle().allow_request(request_b, None))
+
+
 class HealthCheckTests(TestCase):
     """外形監視用ヘルスチェック"""
 
@@ -124,3 +242,38 @@ class HealthCheckTests(TestCase):
         # Assert: DB 疎通が確認でき 200 が返る
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {'status': 'ok'})
+
+    @override_settings(ALLOWED_HOSTS=['api.luggo.delivery'])
+    def test_health_allows_alb_private_ip_host(self) -> None:
+        # Arrange / Act: ALB と同様に Host がプライベート IP
+        response = self.client.get(
+            '/api/common/health',
+            HTTP_HOST='10.0.25.95',
+        )
+
+        # Assert: ALLOWED_HOSTS 外でも 400 にならず 200
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'status': 'ok'})
+
+    @override_settings(ALLOWED_HOSTS=['api.luggo.delivery'])
+    def test_health_allows_head_for_uptime_monitors(self) -> None:
+        # Arrange / Act: UptimeRobot 無料枠と同様に HEAD + プライベート IP Host
+        response = self.client.head(
+            '/api/common/health',
+            HTTP_HOST='10.0.25.95',
+        )
+
+        # Assert: 405 にならず 200（本文なし）
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b'')
+
+    @override_settings(ALLOWED_HOSTS=['api.luggo.delivery'])
+    def test_other_paths_still_reject_disallowed_host(self) -> None:
+        # Act: ヘルス以外は従来どおり Host 検証する
+        response = self.client.get(
+            '/api/common/csrf',
+            HTTP_HOST='10.0.25.95',
+        )
+
+        # Assert: DisallowedHost → 400
+        self.assertEqual(response.status_code, 400)

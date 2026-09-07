@@ -1,6 +1,6 @@
 from rest_framework import generics, status, permissions
 from rest_framework.response import Response
-from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes, throttle_classes
 from rest_framework.request import Request
 from django.db.models import Q
 from django.db import transaction, IntegrityError
@@ -16,7 +16,8 @@ import stripe
 import logging
 import time
 
-from project.utils import mask_sensitive_id
+from project.utils import as_stripe_dict, mask_sensitive_id, stripe_get
+from project.throttling import PaymentRateThrottle, PublicReadRateThrottle
 from project.turnstile import verify_turnstile
 from users.utils import get_client_ip
 from business_owners.models import BusinessProfile
@@ -687,10 +688,10 @@ def _resolve_business_from_payment_intent(payment_intent: Any) -> Optional[Busin
     """
     PaymentIntent の metadata.business_owner_id から担当事業者を逆引き
     """
-    metadata = getattr(payment_intent, 'metadata', None) or {}
-    owner_id = str(
-        (metadata.get('business_owner_id') if hasattr(metadata, 'get') else '') or ''
-    ).strip()
+    metadata = stripe_get(payment_intent, 'metadata') or getattr(
+        payment_intent, 'metadata', None
+    ) or {}
+    owner_id = str(stripe_get(metadata, 'business_owner_id') or '').strip()
     if not owner_id:
         return None
     try:
@@ -1021,6 +1022,7 @@ def _card_details(payment_intent_id: str) -> Optional[dict[str, Any]]:
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
+@throttle_classes([PublicReadRateThrottle])
 def lookup_booking(request: Request) -> Response:
     """予約番号から予約情報を取得（旅行者向けの予約内容確認・キャンセル画面用）"""
     client_ip = get_client_ip(request)
@@ -1163,6 +1165,7 @@ def cancel_booking(request: Request, booking_id: UUID) -> Response:
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
+@throttle_classes([PaymentRateThrottle])
 def create_payment_intent(request: Request) -> Response:
     """Stripe Payment Intentを作成"""
     try:
@@ -1292,7 +1295,9 @@ def create_payment_intent(request: Request) -> Response:
                 )
 
             account_requirements = getattr(connected_account, 'requirements', None)
-            currently_due = account_requirements.get('currently_due', []) if account_requirements else []
+            currently_due = list(
+                stripe_get(account_requirements, 'currently_due', []) or []
+            ) if account_requirements else []
             charges_enabled = getattr(connected_account, 'charges_enabled', False)
             if not charges_enabled or currently_due:
                 logger.warning(
@@ -1631,15 +1636,16 @@ def _get_booking_with_grace(
 
 def _notify_unmatched_payment(payment_intent: Any) -> bool:
     """決済成功済みだが予約レコードが無い場合に運営へ通知する。送信成功で True。"""
-    payment_intent_id = payment_intent.get('id', '') or ''
-    amount = payment_intent.get('amount')
-    receipt_email = payment_intent.get('receipt_email')
+    payment_intent = as_stripe_dict(payment_intent) or {}
+    payment_intent_id = stripe_get(payment_intent, 'id', '') or ''
+    amount = stripe_get(payment_intent, 'amount')
+    receipt_email = stripe_get(payment_intent, 'receipt_email')
 
-    metadata = payment_intent.get('metadata') or {}
-    customer_name = metadata.get('customer_name') if hasattr(metadata, 'get') else None
+    metadata = stripe_get(payment_intent, 'metadata') or {}
+    customer_name = stripe_get(metadata, 'customer_name')
 
     created_iso: Optional[str] = None
-    created_ts = payment_intent.get('created')
+    created_ts = stripe_get(payment_intent, 'created')
     if created_ts:
         try:
             created_iso = (
@@ -1748,8 +1754,8 @@ def _handle_account_updated(account: Any) -> Response:
     連結アカウント（事業者の Stripe Connect アカウント）の状態が変わるたびに送られる。
     状態が変化した場合は同期処理内で事業者へメール通知。
     """
-    account_id = account.get('id', '') if hasattr(account, 'get') else getattr(account, 'id', '')
-    account_id = account_id or ''
+    account = as_stripe_dict(account) or {}
+    account_id = stripe_get(account, 'id', '') or ''
 
     if not account_id:
         logger.warning("Stripe Webhook(account.updated): account.id が空です")
@@ -1809,11 +1815,12 @@ def _handle_charge_dispute(event: Any) -> Response:
     Stripe charge.dispute.created / charge.dispute.closed を受け、
     チャージバック（異議申立て）を DB に記録し、運営へメール通知
     """
-    event_type = event.get('type') or ''
-    dispute = event['data']['object']
+    event = as_stripe_dict(event) or {}
+    event_type = stripe_get(event, 'type') or ''
+    dispute = stripe_get(stripe_get(event, 'data') or {}, 'object') or {}
 
     def _field(key: str) -> Any:
-        return dispute.get(key) if hasattr(dispute, 'get') else getattr(dispute, key, None)
+        return stripe_get(dispute, key)
 
     dispute_id = _field('id') or ''
     if not dispute_id:
@@ -1825,10 +1832,12 @@ def _handle_charge_dispute(event: Any) -> Response:
     payment_intent_raw = _field('payment_intent')
     if isinstance(payment_intent_raw, str):
         payment_intent_id = payment_intent_raw
-    elif payment_intent_raw and hasattr(payment_intent_raw, 'get'):
-        payment_intent_id = payment_intent_raw.get('id', '') or ''
+    elif payment_intent_raw:
+        payment_intent_id = stripe_get(payment_intent_raw, 'id', '') or getattr(
+            payment_intent_raw, 'id', ''
+        ) or ''
     else:
-        payment_intent_id = getattr(payment_intent_raw, 'id', '') or ''
+        payment_intent_id = ''
 
     amount = _field('amount')
     currency = _field('currency') or ''
@@ -1837,14 +1846,12 @@ def _handle_charge_dispute(event: Any) -> Response:
     is_charge_refundable = bool(_field('is_charge_refundable'))
 
     evidence_details = _field('evidence_details') or {}
-    due_by_ts = (
-        evidence_details.get('due_by') if hasattr(evidence_details, 'get') else None
-    )
+    due_by_ts = stripe_get(evidence_details, 'due_by')
     evidence_due_by = _stripe_ts_to_datetime(due_by_ts)
 
     opened_at = _stripe_ts_to_datetime(_field('created'))
     is_closed = event_type == 'charge.dispute.closed'
-    closed_at = _stripe_ts_to_datetime(event.get('created')) if is_closed else None
+    closed_at = _stripe_ts_to_datetime(stripe_get(event, 'created')) if is_closed else None
 
     # payment_intent から対応する予約・事業者を逆引きする
     booking: Optional[LuggageBooking] = None
@@ -1925,9 +1932,7 @@ def _stripe_id(value: Any) -> str:
         return ''
     if isinstance(value, str):
         return value
-    if hasattr(value, 'get'):
-        return value.get('id', '') or ''
-    return getattr(value, 'id', '') or ''
+    return stripe_get(value, 'id', '') or getattr(value, 'id', '') or ''
 
 
 def _reconcile_and_notify(
@@ -2032,12 +2037,13 @@ def _handle_charge_refunded(event: Any) -> Response:
     主に Stripe ダッシュボードからの手動返金や、API 返金後にアプリが落ちて
     delivery_status を更新できなかったケースの復旧に用いる。
     """
-    event_id = event.get('id') or ''
-    event_type = event.get('type') or 'charge.refunded'
-    charge = event['data']['object']
+    event = as_stripe_dict(event) or {}
+    event_id = stripe_get(event, 'id') or ''
+    event_type = stripe_get(event, 'type') or 'charge.refunded'
+    charge = stripe_get(stripe_get(event, 'data') or {}, 'object') or {}
 
     def _field(key: str) -> Any:
-        return charge.get(key) if hasattr(charge, 'get') else getattr(charge, key, None)
+        return stripe_get(charge, key)
 
     payment_intent_id = _stripe_id(_field('payment_intent'))
     charge_id = _field('id') or ''
@@ -2048,9 +2054,7 @@ def _handle_charge_refunded(event: Any) -> Response:
     # 最新の Refund オブジェクトから ID を取得
     refund_id = ''
     refunds = _field('refunds')
-    refund_list = None
-    if refunds is not None:
-        refund_list = refunds.get('data') if hasattr(refunds, 'get') else None
+    refund_list = stripe_get(refunds, 'data') if refunds is not None else None
     if refund_list:
         refund_id = _stripe_id(refund_list[0])
 
@@ -2060,7 +2064,7 @@ def _handle_charge_refunded(event: Any) -> Response:
         if (is_refunded or amount_refunded > 0)
         else LuggageBooking.REFUND_STATUS_PENDING
     )
-    refunded_at = _stripe_ts_to_datetime(event.get('created'))
+    refunded_at = _stripe_ts_to_datetime(stripe_get(event, 'created'))
 
     return _reconcile_and_notify(
         event_type=event_type,
@@ -2082,12 +2086,13 @@ def _handle_refund_updated(event: Any) -> Response:
     ダッシュボードでの手動返金による状態変化を、
     LugGo の予約状態にも反映する。
     """
-    event_id = event.get('id') or ''
-    event_type = event.get('type') or 'refund.updated'
-    refund = event['data']['object']
+    event = as_stripe_dict(event) or {}
+    event_id = stripe_get(event, 'id') or ''
+    event_type = stripe_get(event, 'type') or 'refund.updated'
+    refund = stripe_get(stripe_get(event, 'data') or {}, 'object') or {}
 
     def _field(key: str) -> Any:
-        return refund.get(key) if hasattr(refund, 'get') else getattr(refund, key, None)
+        return stripe_get(refund, key)
 
     payment_intent_id = _stripe_id(_field('payment_intent'))
     charge_id = _stripe_id(_field('charge'))
@@ -2095,7 +2100,7 @@ def _handle_refund_updated(event: Any) -> Response:
     amount = _field('amount')
     amount = amount if isinstance(amount, int) and amount >= 0 else 0
     refund_status = normalize_refund_status(_field('status'))
-    refunded_at = _stripe_ts_to_datetime(event.get('created'))
+    refunded_at = _stripe_ts_to_datetime(stripe_get(event, 'created'))
 
     return _reconcile_and_notify(
         event_type=event_type,
@@ -2115,8 +2120,9 @@ def _handle_refund_event(event: Any) -> Response:
 
     冪等化のため、同一イベントの再送は最初の 1 回のみ処理する。
     """
-    event_type = event.get('type') or ''
-    event_id = event.get('id') or ''
+    event = as_stripe_dict(event) or {}
+    event_type = stripe_get(event, 'type') or ''
+    event_id = stripe_get(event, 'id') or ''
 
     if not claim_webhook_event(event_id, event_type):
         logger.info(
@@ -2153,16 +2159,35 @@ def stripe_webhook(request: Request) -> Response:
     PaymentIntent はプラットフォームアカウント上で作成しているため、本 Webhook は
     プラットフォームアカウントに対して設定する。
     """
-    webhook_secret = settings.STRIPE_WEBHOOK_SECRET
-    if not webhook_secret:
+    webhook_secret = settings.STRIPE_WEBHOOK_SECRET or ''
+    connect_webhook_secret = settings.STRIPE_CONNECT_WEBHOOK_SECRET or ''
+    if not webhook_secret and not connect_webhook_secret:
         logger.error("STRIPE_WEBHOOK_SECRET が未設定のため Webhook を検証できません")
         return Response(status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     sig_header = request.META.get('HTTP_STRIPE_SIGNATURE', '')
     payload = request.body
 
+    # 親アカウント用 / 連結アカウント用で Signing secret が異なるため、登録済みの secret を順に試す
+    secrets_to_try: list[str] = []
+    for secret in (webhook_secret, connect_webhook_secret):
+        if secret and secret not in secrets_to_try:
+            secrets_to_try.append(secret)
+
+    event = None
+    last_signature_err: Optional[BaseException] = None
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+        for secret in secrets_to_try:
+            try:
+                event = stripe.Webhook.construct_event(payload, sig_header, secret)
+                break
+            except stripe.error.SignatureVerificationError as exc:
+                last_signature_err = exc
+                continue
+        if event is None:
+            if last_signature_err is not None:
+                raise last_signature_err
+            raise ValueError('Webhook のペイロードを構築できませんでした')
     except ValueError:
         # ペイロードが不正
         logger.warning("Stripe Webhook: ペイロードの解析に失敗しました")
@@ -2172,11 +2197,13 @@ def stripe_webhook(request: Request) -> Response:
         logger.warning("Stripe Webhook: 署名検証に失敗しました")
         return Response(status=status.HTTP_400_BAD_REQUEST)
 
-    event_type = event.get('type')
+    event = as_stripe_dict(event) or {}
+    event_type = stripe_get(event, 'type')
+    event_data = stripe_get(event, 'data') or {}
 
     # 連結アカウントの審査状態変更を DB に同期
     if event_type == 'account.updated':
-        return _handle_account_updated(event['data']['object'])
+        return _handle_account_updated(stripe_get(event_data, 'object'))
 
     # チャージバック（異議申立て）の発生・クローズを記録し、運営へ通知
     if event_type in ('charge.dispute.created', 'charge.dispute.closed'):
@@ -2190,8 +2217,8 @@ def stripe_webhook(request: Request) -> Response:
     if event_type != 'payment_intent.succeeded':
         return Response(status=status.HTTP_200_OK)
 
-    payment_intent = event['data']['object']
-    payment_intent_id = payment_intent.get('id', '') or ''
+    payment_intent = stripe_get(event_data, 'object') or {}
+    payment_intent_id = stripe_get(payment_intent, 'id', '') or ''
 
     if not payment_intent_id:
         logger.warning("Stripe Webhook: payment_intent.id が空です")

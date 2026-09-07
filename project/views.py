@@ -1,9 +1,7 @@
 from datetime import datetime, timedelta
-import logging
 
 from django.conf import settings
 from django.contrib.sessions.models import Session
-from django.db import connection
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
@@ -13,25 +11,21 @@ from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-logger = logging.getLogger(__name__)
+from project.health import health_payload
 
 
 @never_cache
-@api_view(["GET"])
+@api_view(["GET", "HEAD"])
 @permission_classes([AllowAny])
 def health(request: Request) -> Response:
-    """外形監視用ヘルスチェック（DB 疎通のみ確認）"""
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT 1")
-            cursor.fetchone()
-    except Exception:
-        logger.exception("ヘルスチェック失敗: DB に接続できません")
-        return Response(
-            {"status": "error"},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
-    return Response({"status": "ok"}, status=status.HTTP_200_OK)
+    """
+    外形監視用ヘルスチェック（DB 疎通のみ確認）
+
+    本番の ALB / UptimeRobot は HealthCheckMiddleware が先に応答する。
+    HEAD は外形監視（UptimeRobot 無料枠）向け。このビューは名前付き URL 用。
+    """
+    body, status_code = health_payload()
+    return Response(body, status=status_code)
 
 
 @api_view(["GET"])
