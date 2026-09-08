@@ -17,7 +17,7 @@ import re
 import io
 import logging
 from datetime import date as date_type
-from project.utils import mask_sensitive_id, stripe_get
+from project.utils import as_stripe_dict, mask_sensitive_id, stripe_get
 from project.throttling import (
     EmailSendRateThrottle,
     LoginRateThrottle,
@@ -125,6 +125,9 @@ def _stripe_object_to_dict(obj: Any) -> Dict[str, Any]:
         return {}
     if isinstance(obj, dict):
         return dict(obj)
+    converted = as_stripe_dict(obj)
+    if isinstance(converted, dict):
+        return converted
     try:
         return dict(obj)
     except (TypeError, ValueError):
@@ -238,11 +241,17 @@ def custom_get_account(request: Request) -> Response:
         account_id = business_profile.stripe_account_id
         account = stripe.Account.retrieve(account_id)
 
-        response_data: Dict[str, Any] = {'account_id': account.id, 'account': account}
+        # stripe-python v15 の Account / Person は JSON 非対応のため dict に変換する
+        response_data: Dict[str, Any] = {
+            'account_id': account.id,
+            'account': as_stripe_dict(account),
+        }
 
         if account.business_type == 'company':
             persons = stripe.Account.list_persons(account_id, limit=100)
-            response_data['persons'] = [person for person in persons.data]
+            response_data['persons'] = [
+                as_stripe_dict(person) for person in persons.data
+            ]
 
         return Response(response_data)
 
@@ -1624,7 +1633,7 @@ def custom_update_account(request: Request) -> Response:
                 persons = stripe.Account.list_persons(account_id, limit=100)
                 representative_person = None
                 for person in persons.data:
-                    if person.relationship and person.relationship.get('representative'):
+                    if person.relationship and stripe_get(person.relationship, 'representative'):
                         representative_person = person
                         break
 
@@ -1735,7 +1744,11 @@ def custom_update_account(request: Request) -> Response:
                     existing_director_persons = []
 
                     for person in persons.data:
-                        if person.relationship and person.relationship.get('director') and not person.relationship.get('representative'):
+                        if (
+                            person.relationship
+                            and stripe_get(person.relationship, 'director')
+                            and not stripe_get(person.relationship, 'representative')
+                        ):
                             existing_director_persons.append(person)
 
                     # 新しい取締役を追加または既存の取締役を更新
@@ -1838,7 +1851,7 @@ def custom_update_account(request: Request) -> Response:
 
         # 必要に応じて、利用規約の同意を記録
         tos_acceptance = getattr(account, 'tos_acceptance', None)
-        needs_tos = tos_acceptance is None or tos_acceptance.get('date') is None
+        needs_tos = tos_acceptance is None or stripe_get(tos_acceptance, 'date') is None
         product_company = request_data.get('product_company') or {}
         accept_tos = bool(product_company.get('accept_tos'))
 
@@ -1878,7 +1891,7 @@ def custom_update_account(request: Request) -> Response:
         else:
             account = stripe.Account.retrieve(account_id)
 
-        return Response({'account': account})
+        return Response({'account': as_stripe_dict(account)})
 
     except stripe.error.StripeError as e:  # type: ignore[attr-defined]
         logger.error(
@@ -1961,10 +1974,10 @@ def custom_account_requirements(request: Request) -> Response:
 
         account_id = business_profile.stripe_account_id
         account = stripe.Account.retrieve(account_id)
-        req = account.requirements
-        currently_due = req.get('currently_due', []) if req else []
-        eventually_due = req.get('eventually_due', []) if req else []
-        past_due = req.get('past_due', []) if req else []
+        req = as_stripe_dict(account.requirements) or {}
+        currently_due = list(stripe_get(req, 'currently_due', []) or [])
+        eventually_due = list(stripe_get(req, 'eventually_due', []) or [])
+        past_due = list(stripe_get(req, 'past_due', []) or [])
         return Response({
             'currently_due': currently_due,
             'eventually_due': eventually_due,

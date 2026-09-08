@@ -271,20 +271,31 @@ class StripeOnboardingAPITest(TestCase):
     @patch('business_owners.views.stripe.Account.retrieve')
     def test_get_account_returns_own_account(self, retrieve_mock) -> None:
         # Arrange: 連結アカウント作成済みの事業者と Stripe 取得をモック
+        # stripe-python v15 相当（dict 非互換・to_dict 必須）のオブジェクトで返す
+        class _Account:
+            id = 'acct_existing'
+            business_type = 'individual'
+            charges_enabled = True
+
+            def to_dict(self):
+                return {
+                    'id': self.id,
+                    'business_type': self.business_type,
+                    'charges_enabled': self.charges_enabled,
+                }
+
         self.profile.stripe_account_id = 'acct_existing'
         self.profile.save(update_fields=['stripe_account_id'])
-        retrieve_mock.return_value = _StripeObject(
-            id='acct_existing',
-            business_type='individual',
-        )
+        retrieve_mock.return_value = _Account()
         self._login()
 
         # Act: 連結アカウント取得APIを呼び出す
         response = self.client.get(reverse('stripe_custom_get_account'))
 
-        # Assert: 自社のアカウント情報が返る
+        # Assert: 自社のアカウント情報が JSON として返る
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['account_id'], 'acct_existing')
+        self.assertEqual(response.data['account']['charges_enabled'], True)
         retrieve_mock.assert_called_once_with('acct_existing')
 
     def test_get_account_returns_404_before_onboarding(self) -> None:
