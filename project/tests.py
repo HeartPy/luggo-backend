@@ -1,5 +1,8 @@
 """project 共通 API（ヘルスチェック）のテスト"""
+import os
 import re
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -7,6 +10,7 @@ from django.core.cache import cache
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
+from project.settings import _config_from_env_file, _env_filename_for_settings_module
 from project.tenant_origins import TENANT_SUBDOMAIN_ORIGIN_REGEX
 from project.throttling import (
     LoginRateThrottle,
@@ -43,6 +47,49 @@ class TenantSubdomainOriginRegexTests(SimpleTestCase):
 
         # Assert: マッチしない
         self.assertIsNone(match)
+
+
+class EnvConfigLoadingTests(SimpleTestCase):
+    """settings の .env 読み込み（ファイル欠落時は OS 環境変数へフォールバック）"""
+
+    def test_prod_settings_reads_production_env_file(self) -> None:
+        # Act: settings モジュール名から読む .env ファイル名を決める
+        filename = _env_filename_for_settings_module('project.prod_settings')
+
+        # Assert: 本番用ファイル名になる
+        self.assertEqual(filename, '.env.production')
+
+    def test_dev_settings_reads_development_env_file(self) -> None:
+        # Act: settings モジュール名から読む .env ファイル名を決める
+        filename = _env_filename_for_settings_module('project.settings')
+
+        # Assert: 開発用ファイル名になる
+        self.assertEqual(filename, '.env.development')
+
+    def test_missing_env_file_reads_os_environ(self) -> None:
+        # Arrange: .env が無い一時ディレクトリと OS 環境変数
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {'LUGGO_TEST_ENV_FALLBACK': 'from-os'}):
+                # Act: 欠落した .env を指定して Config を作る
+                config = _config_from_env_file('.env.development', base_dir=Path(tmp))
+
+                # Assert: ファイルではなく OS 環境変数から読める
+                self.assertEqual(config('LUGGO_TEST_ENV_FALLBACK'), 'from-os')
+
+    def test_present_env_file_is_loaded(self) -> None:
+        # Arrange: 一時ディレクトリに .env.development を置く
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / '.env.development').write_text(
+                'LUGGO_TEST_ENV_FILE=from-file\n',
+                encoding='utf-8',
+            )
+
+            # Act: 存在する .env を指定して Config を作る
+            config = _config_from_env_file('.env.development', base_dir=Path(tmp))
+
+            # Assert: OS 環境変数ではなくファイルから読める
+            self.assertNotIn('LUGGO_TEST_ENV_FILE', os.environ)
+            self.assertEqual(config('LUGGO_TEST_ENV_FILE'), 'from-file')
 
 
 class VerifyTurnstileTests(SimpleTestCase):

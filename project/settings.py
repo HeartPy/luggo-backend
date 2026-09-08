@@ -5,15 +5,41 @@
 project.prod_settings はこのファイルの設定を継承し、本番用設定で上書きする。
 """
 
+import os
 from pathlib import Path
-from decouple import Config, RepositoryEnv
+
+from decouple import Config, RepositoryEmpty, RepositoryEnv
 import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-env_file = BASE_DIR / '.env.development'
-config = Config(RepositoryEnv(str(env_file)))
+def _env_filename_for_settings_module(settings_module: str) -> str:
+    """DJANGO_SETTINGS_MODULE に応じて読む .env ファイル名を返す"""
+    if settings_module.rsplit('.', 1)[-1] == 'prod_settings':
+        return '.env.production'
+    return '.env.development'
+
+
+def _config_from_env_file(filename: str, base_dir: Path | None = None) -> Config:
+    """
+    指定の env ファイルがあれば読む。無ければ OS 環境変数のみ。
+
+    python-decouple の RepositoryEnv はファイルが無いと FileNotFoundError になる。
+    本番イメージや CD の collectstatic では .env を置かないため、欠落を許容する。
+    """
+    root = base_dir if base_dir is not None else BASE_DIR
+    path = root / filename
+    if path.is_file():
+        return Config(RepositoryEnv(str(path)))
+    return Config(RepositoryEmpty())
+
+
+config = _config_from_env_file(
+    _env_filename_for_settings_module(
+        os.environ.get('DJANGO_SETTINGS_MODULE', 'project.settings')
+    )
+)
 
 SECRET_KEY = config('SECRET_KEY')
 DEBUG = True

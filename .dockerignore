@@ -8,3 +8,11 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 *.sqlite3
+
+.env
+.env.local
+.env.development
+.env.dev
+.env.test
+.env.production
+.env.prod
