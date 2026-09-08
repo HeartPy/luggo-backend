@@ -428,7 +428,8 @@ class DriverBookingDetailTests(APITestCase):
         # Assert: 403 が返ることを確認
         self.assertEqual(response.status_code, 403)
 
-    def test_deliver_complete_requires_signature(self):
+    @patch('drivers.me_views.create_transfer_for_delivered_booking')
+    def test_deliver_complete_requires_signature(self, transfer_mock):
         # Arrange: 集荷済にしておく
         self.booking.delivery_status = 'picked_up'
         self.booking.save(update_fields=['delivery_status'])
@@ -449,8 +450,10 @@ class DriverBookingDetailTests(APITestCase):
         self.booking.refresh_from_db()
         self.assertEqual(self.booking.delivery_status, 'picked_up')
         self.assertIsNone(self.booking.delivered_at)
+        transfer_mock.assert_not_called()
 
-    def test_deliver_complete_with_signature(self):
+    @patch('drivers.me_views.create_transfer_for_delivered_booking')
+    def test_deliver_complete_with_signature(self, transfer_mock):
         # Arrange: 集荷済にしておく
         self.booking.delivery_status = 'picked_up'
         self.booking.save(update_fields=['delivery_status'])
@@ -469,7 +472,11 @@ class DriverBookingDetailTests(APITestCase):
         self.assertIsNotNone(self.booking.delivered_at)
         self.assertEqual(self.booking.delivery_signature, SIGNATURE)
 
-    def test_deliver_complete_rejects_before_pickup(self):
+        # Assert: 事業者への送金処理が呼ばれる
+        transfer_mock.assert_called_once_with(self.booking)
+
+    @patch('drivers.me_views.create_transfer_for_delivered_booking')
+    def test_deliver_complete_rejects_before_pickup(self, transfer_mock):
         # Act: 集荷前のまま配達完了にする
         response = self.client.patch(
             self._url(),
@@ -481,6 +488,7 @@ class DriverBookingDetailTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.booking.refresh_from_db()
         self.assertEqual(self.booking.delivery_status, 'before_pickup')
+        transfer_mock.assert_not_called()
 
     def test_saves_fees(self):
         # Act: 手数料・交通費を保存

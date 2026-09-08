@@ -18,6 +18,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from bookings.models import LuggageBooking
+from bookings.transfers import create_transfer_for_delivered_booking
 from routing.services.driver_route import (
     DriverRouteError,
     get_or_build_driver_route,
@@ -270,6 +271,8 @@ def _handle_deliver_complete(
         booking.delivered_at = timezone.now()
         update_fields.append('delivered_at')
     booking.save(update_fields=update_fields)
+    # 配達完了した予約は事業者への送金を実行（送金済み・失敗時は内部で判定）
+    create_transfer_for_delivered_booking(booking)
     return None
 
 
