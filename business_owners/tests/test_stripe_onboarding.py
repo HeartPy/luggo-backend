@@ -130,6 +130,66 @@ class StripeOnboardingAPITest(TestCase):
         self.profile.refresh_from_db()
         self.assertEqual(self.profile.stripe_account_id, 'acct_new_2')
 
+    @patch('business_owners.views.stripe.Account.modify')
+    @patch('business_owners.views.stripe.Account.create')
+    def test_create_account_rewrites_localhost_product_url(
+        self, create_mock, modify_mock
+    ) -> None:
+        # Arrange: 開発環境で自動入力されうる localhost URL を含むフォーム
+        self.profile.public_info_consent_at = timezone.now()
+        self.profile.save(update_fields=['public_info_consent_at'])
+        create_mock.return_value = _StripeObject(id='acct_localhost')
+        self._login()
+
+        # Act: localhost の product_url 付きで作成する
+        response = self.client.post(
+            reverse('stripe_custom_create_account'),
+            {
+                'business_type': 'individual',
+                'product_company': {
+                    'company_name': 'テスト屋号',
+                    'company_name_kana': 'テストヤゴウ',
+                    'support_email': 'support@example.com',
+                    'accept_tos': True,
+                },
+                'rep_info': {
+                    'last_name_kanji': '山田',
+                    'first_name_kanji': '太郎',
+                    'last_name_kana': 'ヤマダ',
+                    'first_name_kana': 'タロウ',
+                    'rep_email': 'rep@example.com',
+                    'rep_phone': '08012345678',
+                    'rep_dob': {'year': 1990, 'month': 1, 'day': 2},
+                },
+                'bank_info': {
+                    'bank_code': '0001',
+                    'branch_code': '001',
+                    'account_type': 'futsu',
+                    'account_number': '1234567',
+                    'account_holder_name': 'ヤマダタロウ',
+                },
+                'product_details': {
+                    'product_url': (
+                        f'http://localhost:3000?subdomain={self.profile.subdomain}'
+                    ),
+                    'product_description': 'テスト用の配送サービス',
+                    'product_mcc': '4215',
+                },
+            },
+            format='json',
+            HTTP_USER_AGENT='test-agent',
+        )
+
+        # Assert: Stripe には公開ドメイン URL が渡る
+        self.assertEqual(response.status_code, 201)
+        modify_mock.assert_not_called()
+        create_mock.assert_called_once()
+        _, create_kwargs = create_mock.call_args
+        self.assertEqual(
+            create_kwargs['business_profile']['url'],
+            f'https://{self.profile.subdomain}.luggo.delivery',
+        )
+
     @patch('business_owners.views.stripe.Account.create')
     def test_create_account_returns_400_for_invalid_form_data(
         self, create_mock

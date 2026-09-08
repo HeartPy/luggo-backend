@@ -2,7 +2,7 @@ from django.utils import timezone
 from django.conf import settings
 from django.template.loader import render_to_string
 from typing import Any, Optional, TYPE_CHECKING
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 import secrets
 import logging
 
@@ -31,6 +31,11 @@ def _render_email(template_base: str, context: dict[str, Any]) -> tuple[str, str
     return subject, body_text
 
 
+# フロントの TENANT_BASE_DOMAIN と同じ。開発時 FRONTEND_BASE_URL が localhost
+# でも Stripe 向け公開 URL を組み立てるために使う。
+TENANT_BASE_DOMAIN = "luggo.delivery"
+
+
 def build_booking_form_url(subdomain: str) -> str:
     """旅行者向け予約フォームの URL を組み立て"""
     base = settings.FRONTEND_BASE_URL
@@ -48,6 +53,43 @@ def build_booking_form_url(subdomain: str) -> str:
     host_parts = hostname.split(".")
     base_domain = ".".join(host_parts[1:]) if len(host_parts) >= 3 else hostname
     return f"{protocol}://{subdomain}.{base_domain}/booking"
+
+
+def build_stripe_business_profile_url(subdomain: str) -> str:
+    """Stripe business_profile.url 向けの公開テナント URL を組み立て"""
+    return f"https://{subdomain}.{TENANT_BASE_DOMAIN}"
+
+
+def resolve_stripe_business_profile_url(
+    url: str, subdomain: Optional[str] = None
+) -> str:
+    """
+    Stripe に送る business_profile.url を解決
+
+    Stripe は localhost / 127.0.0.1 を拒否するため、開発用 URL の場合は
+    公開ドメイン形式（https://{subdomain}.luggo.delivery）へ置き換える。
+    """
+    stripped = (url or "").strip()
+    if not stripped:
+        return stripped
+
+    parts = urlsplit(stripped)
+    hostname = (parts.hostname or "").lower()
+    if hostname not in ("localhost", "127.0.0.1"):
+        return stripped
+
+    resolved_subdomain = (subdomain or "").strip().lower()
+    if not resolved_subdomain:
+        # 開発用 URL の ?subdomain= からも拾う
+        query = parse_qs(parts.query)
+        candidates = query.get("subdomain") or []
+        if candidates and isinstance(candidates[0], str):
+            resolved_subdomain = candidates[0].strip().lower()
+
+    if not resolved_subdomain:
+        return stripped
+
+    return build_stripe_business_profile_url(resolved_subdomain)
 
 
 def build_booking_status_url(subdomain: str) -> str:

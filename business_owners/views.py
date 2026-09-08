@@ -44,6 +44,7 @@ from .utils import (
     send_registration_email,
     verify_registration_token,
     send_registration_completed_emails,
+    resolve_stripe_business_profile_url,
 )
 from .stripe_info import get_business_stripe_info
 from .revenue import calculate_monthly_revenue, list_payout_history
@@ -339,7 +340,10 @@ def custom_create_account(request: Request) -> Response:
 
                 product_url = product_details.get('product_url')
                 if product_url and isinstance(product_url, str) and product_url.strip():
-                    product_url = product_url.strip()
+                    product_url = resolve_stripe_business_profile_url(
+                        product_url.strip(),
+                        getattr(business_profile, 'subdomain', None),
+                    )
                     business_profile_data['url'] = product_url
 
                 product_description = product_details.get('product_description')
@@ -545,6 +549,11 @@ def custom_create_account(request: Request) -> Response:
                     value = value.strip()
                     if value == '':
                         continue
+                    if key == 'url':
+                        value = resolve_stripe_business_profile_url(
+                            value,
+                            getattr(business_profile, 'subdomain', None),
+                        )
                     cleaned_business_profile[key] = value
 
                 if cleaned_business_profile:
@@ -1093,6 +1102,7 @@ def custom_update_account(request: Request) -> Response:
             return Response({'error': 'アカウントが見つかりません。'}, status=status.HTTP_404_NOT_FOUND)
 
         account_id = business_profile.stripe_account_id
+        profile_subdomain = business_profile.subdomain
 
         # 変換が必要なフロントエンド形式のデータ（product_company, rep_infoなど）が送られてきた場合、Stripe API形式に変換
         request_data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
@@ -1126,7 +1136,10 @@ def custom_update_account(request: Request) -> Response:
 
                 product_url = product_details.get('product_url')
                 if product_url and isinstance(product_url, str) and product_url.strip():
-                    product_url = product_url.strip()
+                    product_url = resolve_stripe_business_profile_url(
+                        product_url.strip(),
+                        profile_subdomain,
+                    )
                     business_profile['url'] = product_url
 
                 product_description = product_details.get('product_description')
@@ -1299,9 +1312,14 @@ def custom_update_account(request: Request) -> Response:
                 # 文字列以外、空文字列、空白のみの文字列を除外
                 if not isinstance(value, str):
                     continue
-                    value = value.strip()
-                    if value == '':
-                        continue
+                value = value.strip()
+                if value == '':
+                    continue
+                if key == 'url':
+                    value = resolve_stripe_business_profile_url(
+                        value,
+                        profile_subdomain,
+                    )
                 cleaned_business_profile[key] = value
 
             if cleaned_business_profile:
