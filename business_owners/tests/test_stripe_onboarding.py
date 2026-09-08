@@ -41,35 +41,120 @@ class StripeOnboardingAPITest(TestCase):
     def _login(self):
         self.client.force_authenticate(self.owner_user)
 
-    @patch('business_owners.views.stripe.Account.modify')
     @patch('business_owners.views.stripe.Account.create')
-    def test_create_account_saves_stripe_account_id(
-        self, create_mock, modify_mock
+    def test_create_account_rejects_empty_payload(
+        self, create_mock
     ) -> None:
-        # Arrange: 公開情報の表示に同意済みの事業者と、Stripe アカウント作成をモック
+        # Arrange: 同意済みの事業者が、フォームなし（business_type のみ）で作成しようとする
         self.profile.public_info_consent_at = timezone.now()
         self.profile.save(update_fields=['public_info_consent_at'])
-        create_mock.return_value = _StripeObject(id='acct_new_1')
         self._login()
 
-        # Act: 連結アカウント作成APIを呼び出す
+        # Act: フォームデータなしで連結アカウント作成APIを呼び出す
         response = self.client.post(
             reverse('stripe_custom_create_account'),
             {'business_type': 'individual'},
             format='json',
         )
 
-        # Assert: 201 で作成され、stripe_account_id が保存される
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.data['account_id'], 'acct_new_1')
+        # Assert: 空アカウントは作らず 400 を返す
+        self.assertEqual(response.status_code, 400)
+        create_mock.assert_not_called()
         self.profile.refresh_from_db()
-        self.assertEqual(self.profile.stripe_account_id, 'acct_new_1')
+        self.assertIsNone(self.profile.stripe_account_id)
 
-        # Assert: custom アカウントとして日本向けに作成される
+    @patch('business_owners.views.stripe.Account.modify')
+    @patch('business_owners.views.stripe.Account.create')
+    def test_create_account_sends_form_data_in_single_create_call(
+        self, create_mock, modify_mock
+    ) -> None:
+        # Arrange: 同意済みの事業者と、フロントエンド形式のフォームデータを用意
+        self.profile.public_info_consent_at = timezone.now()
+        self.profile.save(update_fields=['public_info_consent_at'])
+        create_mock.return_value = _StripeObject(id='acct_new_2')
+        self._login()
+
+        # Act: フォームデータ付きで連結アカウント作成APIを呼び出す
+        response = self.client.post(
+            reverse('stripe_custom_create_account'),
+            {
+                'business_type': 'individual',
+                'product_company': {
+                    'company_name': 'テスト屋号',
+                    'company_name_kana': 'テストヤゴウ',
+                    'support_email': 'support@example.com',
+                    'accept_tos': True,
+                },
+                'rep_info': {
+                    'last_name_kanji': '山田',
+                    'first_name_kanji': '太郎',
+                    'last_name_kana': 'ヤマダ',
+                    'first_name_kana': 'タロウ',
+                    'rep_email': 'rep@example.com',
+                    'rep_phone': '08012345678',
+                    'rep_dob': {'year': 1990, 'month': 1, 'day': 2},
+                },
+                'bank_info': {
+                    'bank_code': '0001',
+                    'branch_code': '001',
+                    'account_type': 'futsu',
+                    'account_number': '1234567',
+                    'account_holder_name': 'ヤマダタロウ',
+                },
+                'product_details': {
+                    'product_url': 'https://example.com',
+                    'product_description': 'テスト用の配送サービス',
+                    'product_mcc': '4215',
+                },
+            },
+            format='json',
+            HTTP_USER_AGENT='test-agent',
+        )
+
+        # Assert: 201 で作成され、フォーム内容が1回の Account.create にまとめて渡される
+        self.assertEqual(response.status_code, 201)
+        modify_mock.assert_not_called()
+        create_mock.assert_called_once()
         _, create_kwargs = create_mock.call_args
         self.assertEqual(create_kwargs['type'], 'custom')
         self.assertEqual(create_kwargs['country'], 'JP')
         self.assertEqual(create_kwargs['business_type'], 'individual')
+        self.assertEqual(create_kwargs['individual']['last_name_kanji'], '山田')
+        self.assertEqual(
+            create_kwargs['external_account']['routing_number'], '0001001'
+        )
+        self.assertEqual(
+            create_kwargs['business_profile']['url'], 'https://example.com'
+        )
+        self.assertIn('tos_acceptance', create_kwargs)
+        self.profile.refresh_from_db()
+        self.assertEqual(self.profile.stripe_account_id, 'acct_new_2')
+
+    @patch('business_owners.views.stripe.Account.create')
+    def test_create_account_returns_400_for_invalid_form_data(
+        self, create_mock
+    ) -> None:
+        # Arrange: 同意済みの事業者と、不正なフォームデータ（URL形式エラー）を用意
+        self.profile.public_info_consent_at = timezone.now()
+        self.profile.save(update_fields=['public_info_consent_at'])
+        self._login()
+
+        # Act: 不正なフォームデータ付きで連結アカウント作成APIを呼び出す
+        response = self.client.post(
+            reverse('stripe_custom_create_account'),
+            {
+                'business_type': 'individual',
+                'product_details': {'product_url': 'not-a-url'},
+            },
+            format='json',
+        )
+
+        # Assert: アカウントを作成せずに 400 とバリデーションエラーを返す
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('valid_errs', response.data)
+        create_mock.assert_not_called()
+        self.profile.refresh_from_db()
+        self.assertIsNone(self.profile.stripe_account_id)
 
     @patch('business_owners.views.stripe.Account.create')
     def test_create_account_requires_public_info_consent(
