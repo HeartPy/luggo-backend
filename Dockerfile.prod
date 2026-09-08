@@ -58,8 +58,9 @@ RUN mkdir -p /code/staticfiles /code/media \
 # ユーザーを切り替え
 USER django
 
-# 静的ファイルを収集
-RUN python manage.py collectstatic --noinput
+# 静的ファイルを収集。SECRET_KEY は Django 起動に必要なだけなのでビルド専用のダミーを
+# この RUN にだけ渡す（イメージの ENV には残らず、実行時は ECS の値を使う）。
+RUN SECRET_KEY=build-time-collectstatic python manage.py collectstatic --noinput
 
 # ヘルスチェック
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \

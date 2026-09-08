@@ -3,8 +3,6 @@ import os
 from .settings import *
 from .tenant_origins import TENANT_SUBDOMAIN_ORIGIN_REGEX
 
-env_file = BASE_DIR / '.env.production'
-
 DEBUG = False
 
 SESSION_COOKIE_SECURE = True

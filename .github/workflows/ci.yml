@@ -51,8 +51,7 @@ jobs:
         run: uv pip install --system -r requirements/development.txt
 
       - name: 環境ファイルを用意
-        # settings.py が .env.development を必須で読むため example から作成する
-        # （SECRET_KEY 等はダミー値のままでテスト実行に支障なし）
+        # SECRET_KEY 等のダミー値を用意する（未作成でも OS 環境変数があれば起動できる）
         run: cp .env.development.example .env.development
 
       - name: テストを実行
