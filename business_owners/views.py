@@ -261,6 +261,17 @@ def custom_get_account(request: Request) -> Response:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+def _delete_stripe_account_silently(account_id: str) -> None:
+    """作成に失敗したStripeアカウントを削除（削除に失敗してもロールバックは継続する）"""
+    try:
+        stripe.Account.delete(account_id)
+    except Exception:
+        logger.warning(
+            "ロールバック時のStripeアカウント削除に失敗しました: account_id=%s",
+            mask_sensitive_id(account_id),
+        )
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def custom_create_account(request: Request) -> Response:
@@ -299,31 +310,7 @@ def custom_create_account(request: Request) -> Response:
         business_type = request.data.get('business_type', 'individual')
         typed_business_type = cast(BusinessType, business_type)
 
-        # Stripeアカウントを作成
-        # アプリ登録時のメールアドレスをStripeアカウントのメールアドレスとして設定
-        account = stripe.Account.create(
-            type='custom',
-            country='JP',
-            business_type=typed_business_type,
-            email=business_profile.company_email,
-            capabilities={
-                'transfers': {'requested': True},
-                'card_payments': {'requested': True},
-            },
-            settings={
-                'payouts': {
-                    'schedule': {'interval': 'monthly', 'monthly_anchor': 25}
-                }
-            },
-        )
-
-        # BusinessProfileにStripeアカウントIDを保存
-        business_profile.stripe_account_id = account.id
-        business_profile.save()
-
-        account_id = account.id
-
-        # フォームデータが送信されている場合は、アカウント情報を更新
+        # フォームデータが送信されている場合は、アカウント作成時にまとめて登録
         # 変換が必要なフロントエンド形式のデータ（product_company, rep_infoなど）が送られてきた場合、Stripe API形式に変換
         request_data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
 
@@ -505,288 +492,358 @@ def custom_create_account(request: Request) -> Response:
 
             # 変換後のデータを使用
             serializer = CustomAccountUpdateSerializer(data=transformed_data)
+            has_form_payload = True
         else:
             # 既にバックエンド形式のデータの場合
             serializer = CustomAccountUpdateSerializer(data=request.data)
+            has_form_payload = any(
+                key in request_data
+                for key in (
+                    'business_profile', 'company', 'individual',
+                    'external_account', 'verification', 'settings',
+                )
+            )
 
-        # フォームデータがある場合のみ更新処理を実行
-        if serializer.is_valid():
-            try:
-                payload = serializer.validated_data
-                update_params: Dict[str, Any] = {}
+        # フォーム未送信、または送信内容が不正な場合はアカウントを作らずにエラーを返す
+        if not has_form_payload:
+            return Response(
+                {
+                    'error': (
+                        'アカウント登録に必要な情報が不足しています。'
+                        '入力内容をご確認のうえ、再度お試しください。'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-                # Business Profile
-                business_profile_payload = payload.get('business_profile') or {}
-                if business_profile_payload:
-                    cleaned_business_profile: Dict[str, Any] = {}
-                    for key, value in business_profile_payload.items():
+        if not serializer.is_valid():
+            logger.warning(
+                f"Stripeアカウント作成の入力検証エラー: user_id={mask_sensitive_id(request.user.id)}, "
+                f"errors={serializer.errors}"
+            )
+            return Response(
+                {
+                    'error': '入力内容に誤りがあります。入力内容をご確認のうえ、再度お試しください。',
+                    'valid_errs': serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Stripeアカウント作成用のパラメータを構築
+        update_params: Dict[str, Any] = {}
+        try:
+            payload = serializer.validated_data
+
+            # Business Profile
+            business_profile_payload = payload.get('business_profile') or {}
+            if business_profile_payload:
+                cleaned_business_profile: Dict[str, Any] = {}
+                for key, value in business_profile_payload.items():
+                    # 文字列以外、空文字列、空白のみの文字列を除外
+                    if not isinstance(value, str):
+                        continue
+                    value = value.strip()
+                    if value == '':
+                        continue
+                    cleaned_business_profile[key] = value
+
+                if cleaned_business_profile:
+                    update_params['business_profile'] = cleaned_business_profile
+
+            # Settings（明細書表記など）
+            settings_payload = payload.get('settings') or {}
+            if settings_payload:
+                cleaned_settings: Dict[str, Any] = {}
+                payments_payload = settings_payload.get('payments') or {}
+
+                if payments_payload:
+                    cleaned_payments: Dict[str, Any] = {}
+                    for key, value in payments_payload.items():
                         # 文字列以外、空文字列、空白のみの文字列を除外
                         if not isinstance(value, str):
                             continue
-                            value = value.strip()
-                            if value == '':
-                                continue
-                        cleaned_business_profile[key] = value
+                        value = value.strip()
+                        if value == '':
+                            continue
+                        cleaned_payments[key] = value
 
-                    if cleaned_business_profile:
-                        update_params['business_profile'] = cleaned_business_profile
+                    if cleaned_payments:
+                        cleaned_settings['payments'] = cleaned_payments
 
-                # Settings（明細書表記など）
-                settings_payload = payload.get('settings') or {}
-                if settings_payload:
-                    cleaned_settings: Dict[str, Any] = {}
-                    payments_payload = settings_payload.get('payments') or {}
+                if cleaned_settings:
+                    update_params['settings'] = cleaned_settings
 
-                    if payments_payload:
-                        cleaned_payments: Dict[str, Any] = {}
-                        for key, value in payments_payload.items():
+            # Company（business_typeが'company'の場合のみcompanyパラメータを使用）
+            if typed_business_type == 'company':
+                company = payload.get('company') or {}
+                if company:
+                    cleaned_company: Dict[str, Any] = {}
+
+                    if company.get('name'):
+                        name = company['name']
+                        if isinstance(name, str) and name.strip():
+                            cleaned_company['name'] = name.strip()
+
+                    if company.get('name_kanji'):
+                        name_kanji = company['name_kanji']
+                        if isinstance(name_kanji, str) and name_kanji.strip():
+                            cleaned_company['name_kanji'] = name_kanji.strip()
+
+                    if company.get('name_kana'):
+                        name_kana = company['name_kana']
+                        if isinstance(name_kana, str) and name_kana.strip():
+                            cleaned_company['name_kana'] = name_kana.strip()
+
+                    if company.get('phone'):
+                        phone = company['phone']
+                        if isinstance(phone, str) and phone.strip():
+                            cleaned_company['phone'] = format_phone_number_for_stripe(phone.strip())
+
+                    if company.get('tax_id'):
+                        tax_id = company['tax_id']
+                        if isinstance(tax_id, str) and tax_id.strip():
+                            cleaned_company['tax_id'] = tax_id.strip()
+
+                    # address_kanji の処理
+                    address_kanji = company.get('address_kanji')
+                    if isinstance(address_kanji, dict):
+                        cleaned_address_kanji: Dict[str, Any] = {}
+                        for key, value in address_kanji.items():
                             # 文字列以外、空文字列、空白のみの文字列を除外
                             if not isinstance(value, str):
                                 continue
                             value = value.strip()
                             if value == '':
                                 continue
-                            cleaned_payments[key] = value
+                            cleaned_address_kanji[key] = value
 
-                        if cleaned_payments:
-                            cleaned_settings['payments'] = cleaned_payments
+                        if not cleaned_address_kanji.get('country'):
+                            cleaned_address_kanji['country'] = 'JP'
 
-                    if cleaned_settings:
-                        update_params['settings'] = cleaned_settings
-
-                # Company（business_typeが'company'の場合のみcompanyパラメータを使用）
-                if typed_business_type == 'company':
-                    company = payload.get('company') or {}
-                    if company:
-                        cleaned_company: Dict[str, Any] = {}
-
-                        if company.get('name'):
-                            name = company['name']
-                            if isinstance(name, str) and name.strip():
-                                cleaned_company['name'] = name.strip()
-
-                        if company.get('name_kanji'):
-                            name_kanji = company['name_kanji']
-                            if isinstance(name_kanji, str) and name_kanji.strip():
-                                cleaned_company['name_kanji'] = name_kanji.strip()
-
-                        if company.get('name_kana'):
-                            name_kana = company['name_kana']
-                            if isinstance(name_kana, str) and name_kana.strip():
-                                cleaned_company['name_kana'] = name_kana.strip()
-
-                        if company.get('phone'):
-                            phone = company['phone']
-                            if isinstance(phone, str) and phone.strip():
-                                cleaned_company['phone'] = format_phone_number_for_stripe(phone.strip())
-
-                        if company.get('tax_id'):
-                            tax_id = company['tax_id']
-                            if isinstance(tax_id, str) and tax_id.strip():
-                                cleaned_company['tax_id'] = tax_id.strip()
-
-                        # address_kanji の処理
-                        address_kanji = company.get('address_kanji')
-                        if isinstance(address_kanji, dict):
-                            cleaned_address_kanji: Dict[str, Any] = {}
-                            for key, value in address_kanji.items():
-                                # 文字列以外、空文字列、空白のみの文字列を除外
-                                if not isinstance(value, str):
-                                    continue
-                                value = value.strip()
-                                if value == '':
-                                    continue
-                                cleaned_address_kanji[key] = value
-
-                            if not cleaned_address_kanji.get('country'):
-                                cleaned_address_kanji['country'] = 'JP'
-
-                            other_fields = {
-                                key: value
-                                for key, value in cleaned_address_kanji.items()
-                                if key != 'country'
-                            }
-
-                            if other_fields:
-                                cleaned_company['address_kanji'] = cleaned_address_kanji
-
-                        # address_kana の処理
-                        address_kana = company.get('address_kana')
-                        if isinstance(address_kana, dict):
-                            cleaned_address_kana: Dict[str, Any] = {}
-                            for key, value in address_kana.items():
-                                # 文字列以外、空文字列、空白のみの文字列を除外
-                                if not isinstance(value, str):
-                                    continue
-                                value = value.strip()
-                                if value == '':
-                                    continue
-                                cleaned_address_kana[key] = value
-
-                            if not cleaned_address_kana.get('country'):
-                                cleaned_address_kana['country'] = 'JP'
-
-                            other_fields = {
-                                key: value
-                                for key, value in cleaned_address_kana.items()
-                                if key != 'country'
-                            }
-
-                            if other_fields:
-                                cleaned_company['address_kana'] = cleaned_address_kana
-
-                        if cleaned_company:
-                            update_params['company'] = cleaned_company
-
-                # Individual（business_typeが'individual'の場合のみindividualパラメータを使用）
-                if typed_business_type == 'individual':
-                    individual = payload.get('individual') or {}
-                    if individual:
-                        cleaned_individual: Dict[str, Any] = {}
-
-                        if individual.get('last_name_kanji'):
-                            last_name_kanji = individual['last_name_kanji']
-                            if isinstance(last_name_kanji, str) and last_name_kanji.strip():
-                                cleaned_individual['last_name_kanji'] = last_name_kanji.strip()
-
-                        if individual.get('first_name_kanji'):
-                            first_name_kanji = individual['first_name_kanji']
-                            if isinstance(first_name_kanji, str) and first_name_kanji.strip():
-                                cleaned_individual['first_name_kanji'] = first_name_kanji.strip()
-
-                        if individual.get('last_name_kana'):
-                            last_name_kana = individual['last_name_kana']
-                            if isinstance(last_name_kana, str) and last_name_kana.strip():
-                                cleaned_individual['last_name_kana'] = last_name_kana.strip()
-
-                        if individual.get('first_name_kana'):
-                            first_name_kana = individual['first_name_kana']
-                            if isinstance(first_name_kana, str) and first_name_kana.strip():
-                                cleaned_individual['first_name_kana'] = first_name_kana.strip()
-
-                        if individual.get('email'):
-                            email = individual['email']
-                            if isinstance(email, str) and email.strip():
-                                cleaned_individual['email'] = email.strip()
-
-                        if individual.get('phone'):
-                            phone = individual['phone']
-                            if isinstance(phone, str) and phone.strip():
-                                cleaned_individual['phone'] = format_phone_number_for_stripe(phone.strip())
-
-                        dob = individual.get('dob')
-                        if isinstance(dob, dict) and dob:
-                            cleaned_individual['dob'] = dob
-
-                        # address_kanji の処理
-                        address_kanji = individual.get('address_kanji')
-                        if isinstance(address_kanji, dict):
-                            cleaned_address_kanji: Dict[str, Any] = {}
-                            for key, value in address_kanji.items():
-                                # 文字列以外、空文字列、空白のみの文字列を除外
-                                if not isinstance(value, str):
-                                    continue
-                                value = value.strip()
-                                if value == '':
-                                    continue
-                                cleaned_address_kanji[key] = value
-
-                            if not cleaned_address_kanji.get('country'):
-                                cleaned_address_kanji['country'] = 'JP'
-
-                            other_fields = {key: value for key, value in cleaned_address_kanji.items() if key != 'country'}
-
-                            if other_fields:
-                                cleaned_individual['address_kanji'] = cleaned_address_kanji
-
-                        # address_kana の処理
-                        address_kana = individual.get('address_kana')
-                        if isinstance(address_kana, dict):
-                            cleaned_address_kana: Dict[str, Any] = {}
-                            for key, value in address_kana.items():
-                                # 文字列以外、空文字列、空白のみの文字列を除外
-                                if not isinstance(value, str):
-                                    continue
-                                value = value.strip()
-                                if value == '':
-                                    continue
-                                cleaned_address_kana[key] = value
-
-                            if not cleaned_address_kana.get('country'):
-                                cleaned_address_kana['country'] = 'JP'
-
-                            other_fields = {key: value for key, value in cleaned_address_kana.items() if key != 'country'}
-
-                            if other_fields:
-                                cleaned_individual['address_kana'] = cleaned_address_kana
-
-                        # 本人確認書類の処理（アカウントが検証済みの場合は送信しない）
-                        # 新規作成時は検証済みではないため、常に送信可能
-                        verification = payload.get('verification') or {}
-                        verification_params: Dict[str, Any] = {}
-                        document: Dict[str, str] = {}
-
-                        document_front = verification.get('document_front')
-                        if isinstance(document_front, str) and document_front.strip():
-                            document['front'] = document_front.strip()
-
-                        document_back = verification.get('document_back')
-                        if isinstance(document_back, str) and document_back.strip():
-                            document['back'] = document_back.strip()
-
-                        if document:
-                            verification_params['document'] = document
-                        if verification_params:
-                            cleaned_individual['verification'] = verification_params
-
-                        if cleaned_individual:
-                            update_params['individual'] = cleaned_individual
-
-                # External Account (Bank Account)の処理
-                external_account = payload.get('external_account') or {}
-                if external_account:
-                    bank_code_raw = external_account.get('bank_code')
-                    bank_code = bank_code_raw.strip() if isinstance(bank_code_raw, str) else None
-
-                    branch_code_raw = external_account.get('branch_code')
-                    branch_code = branch_code_raw.strip() if isinstance(branch_code_raw, str) else None
-
-                    account_number_raw = external_account.get('account_number')
-                    account_number = account_number_raw.strip() if isinstance(account_number_raw, str) else None
-
-                    account_holder_name_raw = external_account.get('account_holder_name')
-                    account_holder_name = account_holder_name_raw.strip() if isinstance(account_holder_name_raw, str) else None
-
-                    account_type_raw = external_account.get('account_type')
-                    account_type = account_type_raw.strip() if isinstance(account_type_raw, str) else None
-
-                    if all([bank_code, branch_code, account_number, account_holder_name]):
-                        update_params['external_account'] = {
-                            'object': 'bank_account',
-                            'country': 'JP',
-                            'currency': 'jpy',
-                            'routing_number': f'{bank_code}{branch_code}',
-                            'account_number': account_number,
-                            'account_holder_name': account_holder_name,
-                            'account_holder_type': 'company' if account_type == 'toza' else 'individual',
+                        other_fields = {
+                            key: value
+                            for key, value in cleaned_address_kanji.items()
+                            if key != 'country'
                         }
 
-                # 利用規約の同意を記録
-                ip = request.META.get('REMOTE_ADDR')
-                user_agent = request.META.get('HTTP_USER_AGENT')
-                if ip and user_agent:
-                    update_params['tos_acceptance'] = {
-                        'date': int(time.time()),
-                        'ip': ip,
-                        'user_agent': user_agent,
+                        if other_fields:
+                            cleaned_company['address_kanji'] = cleaned_address_kanji
+
+                    # address_kana の処理
+                    address_kana = company.get('address_kana')
+                    if isinstance(address_kana, dict):
+                        cleaned_address_kana: Dict[str, Any] = {}
+                        for key, value in address_kana.items():
+                            # 文字列以外、空文字列、空白のみの文字列を除外
+                            if not isinstance(value, str):
+                                continue
+                            value = value.strip()
+                            if value == '':
+                                continue
+                            cleaned_address_kana[key] = value
+
+                        if not cleaned_address_kana.get('country'):
+                            cleaned_address_kana['country'] = 'JP'
+
+                        other_fields = {
+                            key: value
+                            for key, value in cleaned_address_kana.items()
+                            if key != 'country'
+                        }
+
+                        if other_fields:
+                            cleaned_company['address_kana'] = cleaned_address_kana
+
+                    if cleaned_company:
+                        update_params['company'] = cleaned_company
+
+            # Individual（business_typeが'individual'の場合のみindividualパラメータを使用）
+            if typed_business_type == 'individual':
+                individual = payload.get('individual') or {}
+                if individual:
+                    cleaned_individual: Dict[str, Any] = {}
+
+                    if individual.get('last_name_kanji'):
+                        last_name_kanji = individual['last_name_kanji']
+                        if isinstance(last_name_kanji, str) and last_name_kanji.strip():
+                            cleaned_individual['last_name_kanji'] = last_name_kanji.strip()
+
+                    if individual.get('first_name_kanji'):
+                        first_name_kanji = individual['first_name_kanji']
+                        if isinstance(first_name_kanji, str) and first_name_kanji.strip():
+                            cleaned_individual['first_name_kanji'] = first_name_kanji.strip()
+
+                    if individual.get('last_name_kana'):
+                        last_name_kana = individual['last_name_kana']
+                        if isinstance(last_name_kana, str) and last_name_kana.strip():
+                            cleaned_individual['last_name_kana'] = last_name_kana.strip()
+
+                    if individual.get('first_name_kana'):
+                        first_name_kana = individual['first_name_kana']
+                        if isinstance(first_name_kana, str) and first_name_kana.strip():
+                            cleaned_individual['first_name_kana'] = first_name_kana.strip()
+
+                    if individual.get('email'):
+                        email = individual['email']
+                        if isinstance(email, str) and email.strip():
+                            cleaned_individual['email'] = email.strip()
+
+                    if individual.get('phone'):
+                        phone = individual['phone']
+                        if isinstance(phone, str) and phone.strip():
+                            cleaned_individual['phone'] = format_phone_number_for_stripe(phone.strip())
+
+                    dob = individual.get('dob')
+                    if isinstance(dob, dict) and dob:
+                        cleaned_individual['dob'] = dob
+
+                    # address_kanji の処理
+                    address_kanji = individual.get('address_kanji')
+                    if isinstance(address_kanji, dict):
+                        cleaned_address_kanji: Dict[str, Any] = {}
+                        for key, value in address_kanji.items():
+                            # 文字列以外、空文字列、空白のみの文字列を除外
+                            if not isinstance(value, str):
+                                continue
+                            value = value.strip()
+                            if value == '':
+                                continue
+                            cleaned_address_kanji[key] = value
+
+                        if not cleaned_address_kanji.get('country'):
+                            cleaned_address_kanji['country'] = 'JP'
+
+                        other_fields = {key: value for key, value in cleaned_address_kanji.items() if key != 'country'}
+
+                        if other_fields:
+                            cleaned_individual['address_kanji'] = cleaned_address_kanji
+
+                    # address_kana の処理
+                    address_kana = individual.get('address_kana')
+                    if isinstance(address_kana, dict):
+                        cleaned_address_kana: Dict[str, Any] = {}
+                        for key, value in address_kana.items():
+                            # 文字列以外、空文字列、空白のみの文字列を除外
+                            if not isinstance(value, str):
+                                continue
+                            value = value.strip()
+                            if value == '':
+                                continue
+                            cleaned_address_kana[key] = value
+
+                        if not cleaned_address_kana.get('country'):
+                            cleaned_address_kana['country'] = 'JP'
+
+                        other_fields = {key: value for key, value in cleaned_address_kana.items() if key != 'country'}
+
+                        if other_fields:
+                            cleaned_individual['address_kana'] = cleaned_address_kana
+
+                    # 本人確認書類の処理（アカウントが検証済みの場合は送信しない）
+                    # 新規作成時は検証済みではないため、常に送信可能
+                    verification = payload.get('verification') or {}
+                    verification_params: Dict[str, Any] = {}
+                    document: Dict[str, str] = {}
+
+                    document_front = verification.get('document_front')
+                    if isinstance(document_front, str) and document_front.strip():
+                        document['front'] = document_front.strip()
+
+                    document_back = verification.get('document_back')
+                    if isinstance(document_back, str) and document_back.strip():
+                        document['back'] = document_back.strip()
+
+                    if document:
+                        verification_params['document'] = document
+                    if verification_params:
+                        cleaned_individual['verification'] = verification_params
+
+                    if cleaned_individual:
+                        update_params['individual'] = cleaned_individual
+
+            # External Account (Bank Account)の処理
+            external_account = payload.get('external_account') or {}
+            if external_account:
+                bank_code_raw = external_account.get('bank_code')
+                bank_code = bank_code_raw.strip() if isinstance(bank_code_raw, str) else None
+
+                branch_code_raw = external_account.get('branch_code')
+                branch_code = branch_code_raw.strip() if isinstance(branch_code_raw, str) else None
+
+                account_number_raw = external_account.get('account_number')
+                account_number = account_number_raw.strip() if isinstance(account_number_raw, str) else None
+
+                account_holder_name_raw = external_account.get('account_holder_name')
+                account_holder_name = account_holder_name_raw.strip() if isinstance(account_holder_name_raw, str) else None
+
+                account_type_raw = external_account.get('account_type')
+                account_type = account_type_raw.strip() if isinstance(account_type_raw, str) else None
+
+                if all([bank_code, branch_code, account_number, account_holder_name]):
+                    update_params['external_account'] = {
+                        'object': 'bank_account',
+                        'country': 'JP',
+                        'currency': 'jpy',
+                        'routing_number': f'{bank_code}{branch_code}',
+                        'account_number': account_number,
+                        'account_holder_name': account_holder_name,
+                        'account_holder_type': 'company' if account_type == 'toza' else 'individual',
                     }
 
-                # アカウント情報を更新
-                if update_params:
-                    account = stripe.Account.modify(account_id, **update_params)
+            # 利用規約の同意を記録
+            ip = request.META.get('REMOTE_ADDR')
+            user_agent = request.META.get('HTTP_USER_AGENT')
+            if ip and user_agent:
+                update_params['tos_acceptance'] = {
+                    'date': int(time.time()),
+                    'ip': ip,
+                    'user_agent': user_agent,
+                }
 
-                # business_typeが'company'の場合、Persons APIで代表者と取締役を追加
-                if typed_business_type == 'company':
+        except Exception as build_error:
+            logger.error(
+                f"Stripeアカウント作成パラメータの構築エラー: user_id={mask_sensitive_id(request.user.id)}, "
+                f"error={str(build_error)}",
+                exc_info=True
+            )
+            return Response(
+                {'error': '入力内容の処理に失敗しました。入力内容をご確認のうえ、再度お試しください。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Stripeアカウントを作成
+        # アプリ登録時のメールアドレスをStripeアカウントのメールアドレスとして設定
+        create_params: Dict[str, Any] = {
+            'type': 'custom',
+            'country': 'JP',
+            'business_type': typed_business_type,
+            'email': business_profile.company_email,
+            'capabilities': {
+                'transfers': {'requested': True},
+                'card_payments': {'requested': True},
+            },
+            'settings': {
+                'payouts': {
+                    'schedule': {'interval': 'monthly', 'monthly_anchor': 25}
+                }
+            },
+        }
+        extra_settings = update_params.pop('settings', None)
+        if extra_settings:
+            create_params['settings'] = {**create_params['settings'], **extra_settings}
+        create_params.update(update_params)
+
+        account = stripe.Account.create(**create_params)
+
+        # BusinessProfileにStripeアカウントIDを保存
+        business_profile.stripe_account_id = account.id
+        business_profile.save()
+
+        account_id = account.id
+
+        # business_typeが'company'の場合、Persons APIで代表者と取締役を追加
+        try:
+            if typed_business_type == 'company':
                     rep_info = request_data.get('rep_info') or {}
                     directors_info = rep_info.get('directors', []) if rep_info else []
 
@@ -977,26 +1034,30 @@ def custom_create_account(request: Request) -> Response:
                     company_with_directors = {**(update_params.get('company') or {}), 'directors_provided': True}
                     stripe.Account.modify(account_id, company=company_with_directors)
 
-            except stripe.error.StripeError as update_error:  # type: ignore[attr-defined]
-                # 更新処理でエラーが発生した場合、stripe_account_idをロールバック
-                business_profile.stripe_account_id = None
-                business_profile.save()
-                logger.error(
-                    f"Stripeアカウント更新エラー（作成後）: account_id={mask_sensitive_id(account_id)}, "
-                    f"user_id={mask_sensitive_id(request.user.id)}, error={str(update_error)}"
-                )
-                raise update_error
+        except stripe.error.StripeError as update_error:  # type: ignore[attr-defined]
+            # Persons 登録でエラーが発生した場合、stripe_account_idをロールバックし、
+            # 作成済みのStripeアカウントも削除
+            business_profile.stripe_account_id = None
+            business_profile.save()
+            _delete_stripe_account_silently(account_id)
+            logger.error(
+                f"Stripeアカウント作成後のPersons登録エラー: account_id={mask_sensitive_id(account_id)}, "
+                f"user_id={mask_sensitive_id(request.user.id)}, error={str(update_error)}"
+            )
+            raise update_error
 
-            except Exception as update_error:
-                # 更新処理でエラーが発生した場合、stripe_account_idをロールバック
-                business_profile.stripe_account_id = None
-                business_profile.save()
-                logger.error(
-                    f"Stripeアカウント更新予期しないエラー（作成後）: account_id={mask_sensitive_id(account_id)}, "
-                    f"user_id={mask_sensitive_id(request.user.id)}, error={str(update_error)}",
-                    exc_info=True
-                )
-                raise update_error
+        except Exception as update_error:
+            # Persons 登録でエラーが発生した場合、stripe_account_idをロールバックし、
+            # 作成済みのStripeアカウントも削除
+            business_profile.stripe_account_id = None
+            business_profile.save()
+            _delete_stripe_account_silently(account_id)
+            logger.error(
+                f"Stripeアカウント作成後のPersons登録予期しないエラー: account_id={mask_sensitive_id(account_id)}, "
+                f"user_id={mask_sensitive_id(request.user.id)}, error={str(update_error)}",
+                exc_info=True
+            )
+            raise update_error
 
         logger.info(
             f"Stripeアカウント作成成功: account_id={mask_sensitive_id(account_id)}, "
