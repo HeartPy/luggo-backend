@@ -57,7 +57,7 @@ jobs:
       - name: ECS サービスを再デプロイ
         env:
           SERVICE_API: ${{ vars.ECS_SERVICE_API || 'luggo-api' }}
-          SERVICE_CELERY: ${{ vars.ECS_SERVICE_CELERY || 'luggo-api-celery-worker-service' }}
+          SERVICE_CELERY: ${{ vars.ECS_SERVICE_CELERY || 'luggo-celery' }}
         run: |
           set -euo pipefail
           for SERVICE in "$SERVICE_API" "$SERVICE_CELERY"; do

@@ -132,7 +132,7 @@ GitHub Actions から永久 Access Key を置かず、**OIDC** でロールを�
 | Name | 例 | 必須 |
 | --- | --- | --- |
 | `ECS_SERVICE_API` | `luggo-api` | デフォルトあり |
-| `ECS_SERVICE_CELERY` | `luggo-api-celery-worker-service` | デフォルトあり |
+| `ECS_SERVICE_CELERY` | `luggo-celery` | デフォルトあり |
 | `ECS_TASK_DEFINITION_API` | `luggo-api` | migrate 用。デフォルトあり |
 | `ECS_CONTAINER_API` | `api` | migrate 用。デフォルトあり |
 | `ECS_SUBNETS` | `subnet-aaa,subnet-bbb` | migrate する場合 |
