@@ -1518,9 +1518,10 @@ def create_payment_intent(request: Request) -> Response:
             },
         }
 
-        # メールアドレスをreceipt_emailに設定
+        # 顧客メールはmetadataに保存する（未照合決済アラートで参照）。
+        # receipt_email は設定しない＝Stripeからの領収書メールは送らない。
         if customer_email:
-            payment_intent_params['receipt_email'] = customer_email
+            payment_intent_params['metadata']['customer_email'] = customer_email
 
         # 顧客名をmetadataに追加
         if customer_name:
@@ -1639,10 +1640,10 @@ def _notify_unmatched_payment(payment_intent: Any) -> bool:
     payment_intent = as_stripe_dict(payment_intent) or {}
     payment_intent_id = stripe_get(payment_intent, 'id', '') or ''
     amount = stripe_get(payment_intent, 'amount')
-    receipt_email = stripe_get(payment_intent, 'receipt_email')
 
     metadata = stripe_get(payment_intent, 'metadata') or {}
     customer_name = stripe_get(metadata, 'customer_name')
+    customer_email = stripe_get(metadata, 'customer_email')
 
     created_iso: Optional[str] = None
     created_ts = stripe_get(payment_intent, 'created')
@@ -1672,7 +1673,7 @@ def _notify_unmatched_payment(payment_intent: Any) -> bool:
         payment_intent_id=payment_intent_id,
         amount=amount,
         customer_name=customer_name,
-        customer_email=receipt_email,
+        customer_email=customer_email,
         business_name=business_name,
         created_iso=created_iso,
     )
