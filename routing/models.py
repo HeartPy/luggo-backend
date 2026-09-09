@@ -14,6 +14,7 @@ class DailyAssignmentRun(models.Model):
         APPLIED = 'applied', '適用済み'
         STALE = 'stale', '再割当が必要'
         FAILED = 'failed', '失敗'
+        CANCELLED = 'cancelled', 'キャンセル済み'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     business_owner = models.ForeignKey(

@@ -310,6 +310,10 @@ ROUTING_MAX_DRIVERS = config('ROUTING_MAX_DRIVERS', default=200, cast=int)
 ROUTING_MAX_ADVANCE_DAYS = config(
     'ROUTING_MAX_ADVANCE_DAYS', default=90, cast=int
 )
+# queued / running のまま放置されたランを自動キャンセルするまでの秒数
+ROUTING_RUN_TIMEOUT_SECONDS = config(
+    'ROUTING_RUN_TIMEOUT_SECONDS', default=300, cast=int
+)
 
 # 担当自動割当の計算設定（直線距離の概算で誰に振るかを決める）
 ROUTING_ASSIGNMENT_TIME_LIMIT_SECONDS = config(

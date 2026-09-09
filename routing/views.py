@@ -33,6 +33,40 @@ def _get_business_profile(request: Request) -> Optional[BusinessProfile]:
     return profile
 
 
+def _expire_run_if_timed_out(run: DailyAssignmentRun) -> DailyAssignmentRun:
+    """
+    タイムアウトした queued / running のランを自動キャンセル
+
+    ワーカー停止などでランが進行中のまま残ると、ポーリングが終わらず
+    同日付の再実行も永久にブロックされるため、一定時間で自動的に解消する。
+    """
+    if run.status not in (
+        DailyAssignmentRun.Status.QUEUED,
+        DailyAssignmentRun.Status.RUNNING,
+    ):
+        return run
+
+    timeout = timedelta(
+        seconds=int(getattr(settings, 'ROUTING_RUN_TIMEOUT_SECONDS', 300))
+    )
+    if timezone.now() < run.created_at + timeout:
+        return run
+
+    # 完了処理と競合しても terminal 状態を上書きしないよう、条件付き更新にする
+    DailyAssignmentRun.objects.filter(
+        id=run.id,
+        status__in=[
+            DailyAssignmentRun.Status.QUEUED,
+            DailyAssignmentRun.Status.RUNNING,
+        ],
+    ).update(
+        status=DailyAssignmentRun.Status.CANCELLED,
+        completed_at=timezone.now(),
+    )
+    run.refresh_from_db()
+    return run
+
+
 def _run_is_stale(business_profile: BusinessProfile, run: DailyAssignmentRun) -> bool:
     """
     自動割当結果が古くなっているかを判定
@@ -330,6 +364,11 @@ def assign(request: Request) -> Response:
         ],
     ).first()
     if active:
+        active = _expire_run_if_timed_out(active)
+    if active and active.status in (
+        DailyAssignmentRun.Status.QUEUED,
+        DailyAssignmentRun.Status.RUNNING,
+    ):
         return Response(
             {
                 'errMsg': '同じ日付の自動割当が実行中です。',
@@ -418,6 +457,7 @@ def run_detail(request: Request, run_id: str) -> Response:
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    run = _expire_run_if_timed_out(run)
     return Response(
         {
             'run': _serialize_run(
@@ -447,10 +487,53 @@ def daily(request: Request) -> Response:
         )
 
     run = _run_queryset(business_profile).filter(service_date=service_date).first()
+    if run is not None:
+        run = _expire_run_if_timed_out(run)
     is_stale = _run_is_stale(business_profile, run) if run is not None else False
     return Response(
         {
             'run': _serialize_run(run, is_stale=is_stale) if run else None,
+        },
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def cancel_run(request: Request, run_id: str) -> Response:
+    """実行中（queued / running）の自動割当をキャンセル（冪等）"""
+    business_profile = _get_business_profile(request)
+    if business_profile is None:
+        return Response(
+            {'errMsg': '事業者情報が見つかりません。'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    with transaction.atomic():
+        try:
+            run = DailyAssignmentRun.objects.select_for_update().get(
+                id=run_id, business_owner=business_profile
+            )
+        except DailyAssignmentRun.DoesNotExist:
+            return Response(
+                {'errMsg': '自動割当結果が見つかりません。'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if run.status in (
+            DailyAssignmentRun.Status.QUEUED,
+            DailyAssignmentRun.Status.RUNNING,
+        ):
+            run.status = DailyAssignmentRun.Status.CANCELLED
+            run.completed_at = timezone.now()
+            run.save(update_fields=['status', 'completed_at'])
+
+    # 終端状態（draft / applied 等）ならそのまま現在の状態を返す
+    refreshed = _run_queryset(business_profile).get(id=run.id)
+    return Response(
+        {
+            'run': _serialize_run(
+                refreshed, is_stale=_run_is_stale(business_profile, refreshed),
+            ),
         },
     )
 
