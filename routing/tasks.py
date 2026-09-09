@@ -23,9 +23,17 @@ logger = logging.getLogger(__name__)
 @shared_task
 def assign_daily_tasks(run_id: str) -> None:
     run = DailyAssignmentRun.objects.select_related('business_owner').get(id=run_id)
-    run.status = DailyAssignmentRun.Status.RUNNING
-    run.started_at = timezone.now()
-    run.save(update_fields=['status', 'started_at'])
+
+    # 実行前にキャンセル等で queued 以外になっていたら何もしない
+    updated = DailyAssignmentRun.objects.filter(
+        id=run.id, status=DailyAssignmentRun.Status.QUEUED,
+    ).update(status=DailyAssignmentRun.Status.RUNNING, started_at=timezone.now())
+    if not updated:
+        logger.info(
+            '日次自動割当をスキップしました（実行待ちではありません）: run_id=%s',
+            run_id,
+        )
+        return
     try:
         problem = build_tasks(
             run.business_owner,
@@ -38,6 +46,13 @@ def assign_daily_tasks(run_id: str) -> None:
 
         with transaction.atomic():
             locked = DailyAssignmentRun.objects.select_for_update().get(id=run.id)
+            # 計算中にキャンセルされていたら結果を破棄する
+            if locked.status != DailyAssignmentRun.Status.RUNNING:
+                logger.info(
+                    '日次自動割当の結果を破棄しました（キャンセル済み）: run_id=%s',
+                    run_id,
+                )
+                return
             locked.assignments.all().delete()
             DailyTaskAssignment.objects.bulk_create([
                 DailyTaskAssignment(
@@ -57,7 +72,14 @@ def assign_daily_tasks(run_id: str) -> None:
             ])
     except Exception:
         logger.exception('日次自動割当に失敗しました: run_id=%s', run_id)
-        DailyAssignmentRun.objects.filter(id=run.id).update(
+        # キャンセル済みなど、すでに終わった状態は失敗に書き換えない
+        DailyAssignmentRun.objects.filter(
+            id=run.id,
+            status__in=[
+                DailyAssignmentRun.Status.QUEUED,
+                DailyAssignmentRun.Status.RUNNING,
+            ],
+        ).update(
             status=DailyAssignmentRun.Status.FAILED,
             completed_at=timezone.now(),
         )

@@ -35,6 +35,7 @@ urlpatterns: list[URLPattern] = [
     path('routing/estimate', routing_views.estimate, name='routing_estimate'),
     path('routing/runs/<uuid:run_id>', routing_views.run_detail, name='routing_run_detail'),
     path('routing/runs/<uuid:run_id>/apply', routing_views.apply_run, name='routing_run_apply'),
+    path('routing/runs/<uuid:run_id>/cancel', routing_views.cancel_run, name='routing_run_cancel'),
     path('routing/daily', routing_views.daily, name='routing_daily'),
 
     # 売上

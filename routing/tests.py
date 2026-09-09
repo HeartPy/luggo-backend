@@ -948,6 +948,65 @@ class AssignmentTaskTests(TestCase):
         self.assertTrue(flags[(manual.id, 'pickup')])
         self.assertFalse(flags[(auto.id, 'pickup')])
 
+    def test_skips_run_cancelled_before_start(self):
+        # Arrange: 実行前にキャンセル済みの run を用意
+        owner = make_owner('cancel-pre')
+        make_driver(owner, 'cancel-pre')
+        booking = make_booking(
+            owner,
+            'cancel-pre',
+            delivery_date=timezone.localdate() + timedelta(days=3),
+        )
+        problem = build_tasks(owner, booking.pickup_date)
+        run = DailyAssignmentRun.objects.create(
+            business_owner=owner,
+            service_date=booking.pickup_date,
+            status=DailyAssignmentRun.Status.CANCELLED,
+            input_hash=snapshot_hash(problem.snapshot()),
+        )
+
+        # Act: 日次割当タスクを実行
+        assign_daily_tasks(str(run.id))
+
+        # Assert: 何も保存されず cancelled のままであることを確認
+        run.refresh_from_db()
+        self.assertEqual(run.status, DailyAssignmentRun.Status.CANCELLED)
+        self.assertIsNone(run.started_at)
+        self.assertFalse(DailyTaskAssignment.objects.filter(run=run).exists())
+
+    def test_discards_result_when_cancelled_during_run(self):
+        # Arrange: 計算中にキャンセルされる run を用意
+        owner = make_owner('cancel-mid')
+        make_driver(owner, 'cancel-mid')
+        booking = make_booking(
+            owner,
+            'cancel-mid',
+            delivery_date=timezone.localdate() + timedelta(days=3),
+        )
+        problem = build_tasks(owner, booking.pickup_date)
+        run = DailyAssignmentRun.objects.create(
+            business_owner=owner,
+            service_date=booking.pickup_date,
+            input_hash=snapshot_hash(problem.snapshot()),
+        )
+
+        # 割当計算の途中でキャンセルされた状況を再現
+        def cancel_then_assign(drivers, tasks):
+            DailyAssignmentRun.objects.filter(id=run.id).update(
+                status=DailyAssignmentRun.Status.CANCELLED,
+                completed_at=timezone.now(),
+            )
+            return assign_tasks(drivers, tasks)
+
+        # Act: 日次割当タスクを実行
+        with patch('routing.tasks.assign_tasks', side_effect=cancel_then_assign):
+            assign_daily_tasks(str(run.id))
+
+        # Assert: 結果が破棄され cancelled のままであることを確認
+        run.refresh_from_db()
+        self.assertEqual(run.status, DailyAssignmentRun.Status.CANCELLED)
+        self.assertFalse(DailyTaskAssignment.objects.filter(run=run).exists())
+
 
 class RoutingAPITests(APITestCase):
     """ルーティング割当・見積・適用などの Business API のテスト"""
@@ -1245,6 +1304,107 @@ class RoutingAPITests(APITestCase):
         self.assertEqual(other_response.status_code, 200)
         self.assertEqual(other_response.data['results'], [])
 
+    def test_cancel_run_cancels_active_run(self):
+        # Arrange: queued の run を用意して認証
+        run = self._queued_run()
+        self.client.force_authenticate(self.owner.user)
+
+        # Act: キャンセル API を呼び出す
+        response = self.client.post(
+            f'/api/business/routing/runs/{run.id}/cancel', {}, format='json'
+        )
+
+        # Assert: cancelled になり completed_at が設定されることを確認
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['run']['status'], 'cancelled')
+        run.refresh_from_db()
+        self.assertEqual(run.status, DailyAssignmentRun.Status.CANCELLED)
+        self.assertIsNotNone(run.completed_at)
+
+    def test_cancel_run_keeps_terminal_states(self):
+        # Arrange: 終端状態（draft）の run を用意して認証
+        run = self._draft_run()
+        self.client.force_authenticate(self.owner.user)
+
+        # Act: キャンセル API を呼び出す
+        response = self.client.post(
+            f'/api/business/routing/runs/{run.id}/cancel', {}, format='json'
+        )
+
+        # Assert: 上書きされず draft のまま返ることを確認（冪等）
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['run']['status'], 'draft')
+        run.refresh_from_db()
+        self.assertEqual(run.status, DailyAssignmentRun.Status.DRAFT)
+
+    def test_cancel_run_is_owner_scoped(self):
+        # Arrange: 他社オーナーと queued run を用意
+        other = make_owner('cancel-other')
+        run = self._queued_run()
+        self.client.force_authenticate(other.user)
+
+        # Act: 他社として run をキャンセル
+        response = self.client.post(
+            f'/api/business/routing/runs/{run.id}/cancel', {}, format='json'
+        )
+
+        # Assert: 見つからず、状態も変わらないことを確認
+        self.assertEqual(response.status_code, 404)
+        run.refresh_from_db()
+        self.assertEqual(run.status, DailyAssignmentRun.Status.QUEUED)
+
+    def test_run_detail_cancels_timed_out_run(self):
+        # Arrange: タイムアウトを超過した queued run を用意
+        run = self._queued_run()
+        DailyAssignmentRun.objects.filter(id=run.id).update(
+            created_at=timezone.now() - timedelta(seconds=301),
+        )
+        self.client.force_authenticate(self.owner.user)
+
+        # Act: ポーリング用の run 詳細を取得
+        response = self.client.get(f'/api/business/routing/runs/{run.id}')
+
+        # Assert: 自動キャンセルされて返ることを確認
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['run']['status'], 'cancelled')
+        run.refresh_from_db()
+        self.assertEqual(run.status, DailyAssignmentRun.Status.CANCELLED)
+
+    def test_run_detail_keeps_run_within_timeout(self):
+        # Arrange: タイムアウト前の queued run を用意
+        run = self._queued_run()
+        self.client.force_authenticate(self.owner.user)
+
+        # Act: run 詳細を取得
+        response = self.client.get(f'/api/business/routing/runs/{run.id}')
+
+        # Assert: queued のままであることを確認
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['run']['status'], 'queued')
+
+    @patch('routing.views.assign_daily_tasks.delay')
+    def test_assign_allows_new_run_after_timeout(self, delay):
+        # Arrange: タイムアウトを超過した queued run を用意
+        stuck = self._queued_run()
+        DailyAssignmentRun.objects.filter(id=stuck.id).update(
+            created_at=timezone.now() - timedelta(seconds=301),
+        )
+        self.client.force_authenticate(self.owner.user)
+
+        # Act: 同じ日付で割当を再実行
+        response = self.client.post(
+            '/api/business/routing/assign',
+            {'date': self.booking.pickup_date.isoformat()},
+            format='json',
+        )
+
+        # Assert: 古い run は自動キャンセルされ、新しい run が受け付けられることを確認
+        self.assertEqual(response.status_code, 202)
+        stuck.refresh_from_db()
+        self.assertEqual(stuck.status, DailyAssignmentRun.Status.CANCELLED)
+        self.assertNotEqual(response.data['run']['id'], str(stuck.id))
+        delay.assert_called_once()
+
     def _draft_run(self):
         """現在の入力スナップショットから draft run を作成"""
         problem = build_tasks(self.owner, self.booking.pickup_date)
@@ -1253,5 +1413,16 @@ class RoutingAPITests(APITestCase):
             business_owner=self.owner,
             service_date=self.booking.pickup_date,
             status=DailyAssignmentRun.Status.DRAFT,
+            input_hash=snapshot_hash(snapshot),
+        )
+
+    def _queued_run(self):
+        """現在の入力スナップショットから queued run を作成"""
+        problem = build_tasks(self.owner, self.booking.pickup_date)
+        snapshot = problem.snapshot()
+        return DailyAssignmentRun.objects.create(
+            business_owner=self.owner,
+            service_date=self.booking.pickup_date,
+            status=DailyAssignmentRun.Status.QUEUED,
             input_hash=snapshot_hash(snapshot),
         )
