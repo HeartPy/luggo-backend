@@ -1,4 +1,4 @@
-# LugGo
+# LugGo（ラグゴー）
 
 旅行者向け手荷物配送を行う事業者のための SaaS（B2B2C）です。
 予約フォーム・決済・予約管理・配達者管理・売上管理までを一括で運用でき、**固定費は完全無料**（決済手数料型）で始められます。
@@ -7,10 +7,11 @@
 
 ## サービス URL
 
-- 公開サイト: [https://luggo.delivery](https://luggo.delivery)
-- テストテナント（予約フォーム）: [https://luggo.luggo.delivery](https://luggo.luggo.delivery)
+- 公開サイト: <a href="https://luggo.delivery" target="_blank" rel="noopener noreferrer">https://luggo.delivery</a>
+- テストテナント（予約フォーム）: <a href="https://luggo.luggo.delivery/booking" target="_blank" rel="noopener noreferrer">https://luggo.luggo.delivery/booking</a>
 
 ※ 事業者ごとに `{subdomain}.luggo.delivery` の予約フォームが発行されます。
+
 ※ テストテナントでは**実際に決済される**ため、操作にはご注意ください。
 
 ## 概要
