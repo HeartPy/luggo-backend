@@ -1,0 +1,187 @@
+// Luggo ER図（ポートフォリオ向け簡略版）
+// ドメインの中核テーブルのみ。Django標準・トークン・監査・Webhook等は除外。
+// dbdiagram.io に貼り付けて利用する。
+
+Project Luggo {
+  database_type: 'PostgreSQL'
+  Note: '''荷物配送予約システムの主要エンティティ関係図（簡略版）'''
+}
+
+Enum user_type {
+  "business_owner" [note: '事業者']
+  "delivery_driver" [note: '配達者']
+  "admin" [note: '管理者']
+}
+
+Enum business_type {
+  "company" [note: '法人']
+  "individual" [note: '個人事業主']
+}
+
+Enum delivery_status {
+  "before_pickup" [note: '集荷前']
+  "picked_up" [note: '集荷済']
+  "delivered" [note: '配達済']
+  "cancelled" [note: 'キャンセル']
+}
+
+Enum refund_status {
+  "none" [note: '返金なし']
+  "pending" [note: '返金処理中']
+  "succeeded" [note: '返金完了']
+  "failed" [note: '返金失敗']
+  "canceled" [note: '返金取消']
+}
+
+Enum assignment_run_status {
+  "queued" [note: '実行待ち']
+  "running" [note: '自動割当中']
+  "draft" [note: '提案を確認中']
+  "applied" [note: '適用済み']
+  "stale" [note: '再割当が必要']
+  "failed" [note: '失敗']
+  "cancelled" [note: 'キャンセル済み']
+}
+
+Enum task_kind {
+  "pickup" [note: '集荷']
+  "delivery" [note: '配達']
+}
+
+Table users {
+  Note: '事業者・配達者・管理者を統合管理（旅行者は予約に直接保存）'
+
+  id uuid [pk]
+  email varchar [unique, not null]
+  user_type user_type [not null]
+  last_name varchar [not null]
+  first_name varchar [not null]
+  phone_number varchar
+  is_active boolean [not null, default: true]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table business_profiles {
+  Note: '事業者プロフィール'
+
+  id uuid [pk]
+  user_id uuid [unique, not null, ref: - users.id]
+  business_type business_type [not null]
+  company_name varchar [not null]
+  company_email varchar [not null]
+  subdomain varchar [unique, not null, note: '予約フォームURL']
+  service_areas json [note: '集荷地域']
+  daily_max_luggage integer [not null]
+  stripe_account_id varchar [unique]
+  stripe_charges_enabled boolean [not null]
+  stripe_payouts_enabled boolean [not null]
+  is_active boolean [not null, default: true]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table driver_profiles {
+  Note: '配達者プロフィール'
+
+  id uuid [pk]
+  user_id uuid [unique, not null, ref: - users.id]
+  business_owner_id uuid [not null, ref: > business_profiles.id]
+  company_name varchar [not null]
+  departure_address text
+  shift_start time
+  max_daily_stops integer
+  max_daily_luggage_count integer
+  operating_days varchar [note: '稼働曜日']
+  is_available boolean [not null, note: '自動割当の候補']
+  is_active boolean [not null, default: true]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table luggage_bookings {
+  Note: '荷物配送予約（ドメインの中心）'
+
+  id uuid [pk]
+  booking_number varchar [unique, not null]
+  business_owner_id uuid [not null, ref: > business_profiles.id]
+  driver_id uuid [ref: > driver_profiles.id, note: '配達担当']
+  pickup_driver_id uuid [ref: > driver_profiles.id, note: '集荷担当（分ける場合）']
+  delivery_status delivery_status [not null]
+  refund_status refund_status [not null]
+  pickup_location_name varchar [not null]
+  pickup_location_address text [not null]
+  pickup_date date [not null]
+  delivery_location_name varchar [not null]
+  delivery_location_address text [not null]
+  delivery_date date [not null]
+  luggage_items json [note: '荷物情報']
+  total_amount integer [not null]
+  customer_name varchar [not null]
+  customer_email varchar [not null]
+  customer_phone_number varchar
+  payment_intent_id varchar
+  picked_up_at timestamp
+  delivered_at timestamp
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table daily_assignment_runs {
+  Note: '日次自動割当の実行記録'
+
+  id uuid [pk]
+  business_owner_id uuid [not null, ref: > business_profiles.id]
+  service_date date [not null]
+  status assignment_run_status [not null]
+  selected_driver_ids json
+  unassigned_tasks json
+  created_at timestamp [not null]
+  started_at timestamp
+  completed_at timestamp
+  applied_at timestamp
+}
+
+Table daily_task_assignments {
+  Note: '集荷・配達ごとの担当割当'
+
+  id bigint [pk]
+  run_id uuid [not null, ref: > daily_assignment_runs.id]
+  booking_id uuid [not null, ref: > luggage_bookings.id]
+  driver_id uuid [not null, ref: > driver_profiles.id]
+  kind task_kind [not null]
+  manually_assigned boolean [not null, default: false]
+  created_at timestamp [not null]
+}
+
+Table driver_route_results {
+  Note: '配達者ダッシュボード用の最適化ルート'
+
+  id bigint [pk]
+  driver_id uuid [not null, ref: > driver_profiles.id]
+  service_date date [not null]
+  route json [not null]
+  generated_at timestamp [not null]
+}
+
+TableGroup users {
+  users
+}
+
+TableGroup business_owners {
+  business_profiles
+}
+
+TableGroup drivers {
+  driver_profiles
+}
+
+TableGroup bookings {
+  luggage_bookings
+}
+
+TableGroup routing {
+  daily_assignment_runs
+  daily_task_assignments
+  driver_route_results
+}
